@@ -1,0 +1,551 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>セルフレジ</title>
+<style>
+* { box-sizing: border-box; }
+body { margin: 0; font-family: "Hiragino Kaku Gothic ProN", "Meiryo", sans-serif; background: #FFF5E1; color: #333; overflow-x: hidden; }
+header { background: #FF9800; color: white; padding: 15px; text-align: center; font-size: 28px; font-weight: bold; position: relative; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
+#adminBtn { position: absolute; right: 15px; top: 15px; font-size: 16px; padding: 10px; border-radius: 8px; border: none; background: #FFC107; cursor: pointer; font-weight: bold; }
+main { max-width: 900px; margin: auto; padding: 20px; }
+.view { display: none; }
+.view.active { display: block; }
+.products { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 20px; }
+.product { background: white; border: 4px solid #FFCC80; border-radius: 20px; padding: 20px; text-align: center; cursor: pointer; transition: transform 0.1s; box-shadow: 0 4px 0 #FFB74D; user-select: none; }
+.product:active { transform: translateY(4px); box-shadow: 0 0 0 #FFB74D; }
+.product b { display: block; font-size: 24px; margin-bottom: 10px; color: #E65100; }
+.product span { font-size: 22px; font-weight: bold; background: #FFF3E0; padding: 5px 15px; border-radius: 20px; }
+.cart-area { margin-top: 30px; background: white; border: 4px solid #81C784; border-radius: 20px; padding: 20px; }
+.cart-title { font-size: 24px; font-weight: bold; color: #2E7D32; border-bottom: 3px dashed #C8E6C9; padding-bottom: 10px; margin-bottom: 10px; }
+.cart-item { display: flex; justify-content: space-between; align-items: center; font-size: 22px; padding: 10px 0; border-bottom: 2px dashed #eee; }
+.cart-total { font-size: 32px; font-weight: bold; text-align: right; margin-top: 15px; color: #D32F2F; }
+.checkout-btn { display: block; width: 100%; background: #4CAF50; color: white; font-size: 30px; font-weight: bold; border: none; border-radius: 15px; padding: 20px; margin-top: 20px; cursor: pointer; box-shadow: 0 6px 0 #388E3C; transition: transform 0.1s; }
+.checkout-btn:active { transform: translateY(6px); box-shadow: 0 0 0 #388E3C; }
+.checkout-btn:disabled { background: #ccc; box-shadow: 0 6px 0 #aaa; cursor: not-allowed; }
+.camera-container { position: relative; width: 100%; max-width: 640px; margin: 0 auto 20px; border: 6px solid #333; border-radius: 20px; overflow: hidden; background: #000; }
+video { width: 100%; display: block; }
+canvas { position: absolute; top: 0; left: 0; width: 100%; height: 100%; z-index: 10; pointer-events: none; }
+.scan-info { text-align: center; font-size: 28px; font-weight: bold; margin-bottom: 20px; }
+.detected-amount { font-size: 40px; color: #1976D2; font-weight: bold; text-align: center; margin: 20px 0; background: #E3F2FD; padding: 15px; border-radius: 15px; }
+.btn-back { background: #9E9E9E; color: white; font-size: 24px; padding: 15px 30px; border: none; border-radius: 12px; cursor: pointer; box-shadow: 0 4px 0 #616161; }
+.btn-back:active { transform: translateY(4px); box-shadow: 0 0 0; }
+.btn-pay { background: #E91E63; color: white; font-size: 30px; font-weight: bold; padding: 20px 40px; border: none; border-radius: 15px; cursor: pointer; box-shadow: 0 6px 0 #C2185B; width: 100%; margin-top: 20px; }
+.btn-pay:active { transform: translateY(6px); box-shadow: 0 0 0; }
+.btn-pay:disabled { background: #ccc; box-shadow: 0 6px 0 #aaa; cursor: not-allowed; }
+.admin-item { background: white; padding: 15px; border: 2px solid #ddd; border-radius: 10px; margin-bottom: 10px; display: flex; justify-content: space-between; align-items: center; }
+.admin-actions button { font-size: 18px; padding: 10px 20px; margin-left: 10px; }
+.modal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.8); z-index: 100; justify-content: center; align-items: center; }
+.modal.active { display: flex; }
+.modal-content { background: white; padding: 30px; border-radius: 20px; max-width: 500px; width: 90%; text-align: center; }
+.modal-content input { font-size: 24px; padding: 10px; width: 80%; margin: 15px 0; border: 2px solid #ccc; border-radius: 10px; text-align: center; }
+#loading { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(255,255,255,0.95); z-index: 1000; display: flex; justify-content: center; align-items: center; font-size: 30px; font-weight: bold; flex-direction: column; }
+.spinner { border: 8px solid #f3f3f3; border-top: 8px solid #FF9800; border-radius: 50%; width: 60px; height: 60px; animation: spin 1s linear infinite; margin-bottom: 20px; }
+@keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+.change-alert { background: #FFEB3B; padding: 20px; border-radius: 15px; text-align: center; border: 4px solid #FBC02D; margin-bottom: 20px; }
+.change-alert h2 { color: #E65100; font-size: 32px; margin: 0 0 10px 0; }
+.change-alert p { font-size: 24px; margin: 0; font-weight: bold; }
+</style>
+</head>
+<body>
+
+<div id="loading">
+  <div class="spinner"></div>
+  <div id="loadingText">じゅんびちゅう...</div>
+</div>
+
+<header>
+  🛍️ セルフレジ
+  <button id="adminBtn" onclick="openAdmin()">かんり</button>
+</header>
+
+<main>
+  <!-- 商品選択画面 -->
+  <div id="view-products" class="view active">
+    <div class="products" id="productsList"></div>
+    <div class="cart-area">
+      <div class="cart-title">🛒 えらんだもの</div>
+      <div id="cartItems"></div>
+      <div class="cart-total" id="cartTotal">ごうけい：0えん</div>
+      <button class="checkout-btn" id="btnGoCheckout" onclick="goToCheckout()" disabled>おかいけいへ ➡️</button>
+    </div>
+  </div>
+
+  <!-- おつり調整画面 -->
+  <div id="view-change" class="view">
+    <div class="change-alert">
+      <h2>⚠️ おつりがあります</h2>
+      <p>おつりが <span id="changeAmountLabel" style="color:red;font-size:36px;"></span> えん になっています。<br>おつりが「0えん」になるように、10えんの しょうひんを えらんでね！</p>
+    </div>
+    <div class="products" id="changeProductsList"></div>
+    <div class="cart-area">
+      <div class="cart-total" id="changeCartTotal">のこりのおつり：0えん</div>
+      <button class="checkout-btn" id="btnFinishChange" onclick="finishCheckout()" disabled>これで おかいけい！</button>
+      <div style="text-align:center; margin-top:15px;">
+        <button class="btn-back" onclick="cancelChange()">やめる（もどる）</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- カメラ・会計画面 -->
+  <div id="view-checkout" class="view">
+    <div class="scan-info" id="scanInfo">
+      かいものごうけい： <span id="checkoutTotal" style="color:#D32F2F">0えん</span><br>
+      <span style="font-size:20px; color:#666;" id="checkoutInstruction">カメラの下に おかねを おいてね</span>
+    </div>
+    <div class="camera-container">
+      <video id="videoElement" autoplay playsinline></video>
+      <canvas id="overlayCanvas"></canvas>
+    </div>
+    <div class="detected-amount">
+      いれたおかね： <span id="detectedTotal">0</span> えん
+    </div>
+    <button class="btn-pay" id="btnPay" onclick="processPayment()" disabled>けっさいする 💳</button>
+    <div style="text-align: center; margin-top: 30px;">
+      <button class="btn-back" onclick="goToProducts()">もどる</button>
+    </div>
+  </div>
+
+  <!-- 管理画面 -->
+  <div id="view-admin" class="view">
+    <h2>⚙️ 管理画面（通貨の登録）</h2>
+    <p>机の木目など関係なく検知できます。<br>
+    まず通貨を置かずに「背景を記憶」を押し、その後通貨を置いて登録してください。</p>
+    <div class="camera-container">
+      <video id="adminVideoElement" autoplay playsinline></video>
+      <canvas id="adminOverlayCanvas"></canvas>
+      <div id="adminTargetBox" style="position:absolute;top:50%;left:50%;width:150px;height:150px;border:4px solid red;transform:translate(-50%,-50%);z-index:20;pointer-events:none;display:none;"></div>
+    </div>
+    <div style="text-align:center; margin-bottom:30px;">
+      <button class="btn-back" id="btnAdminBg" style="width:auto;font-size:20px;background:#2196F3;" onclick="captureBackground(false)">① つくえ（背景）を記憶する</button>
+      <br>
+      <button class="btn-pay" id="btnAdminCapture" style="width:auto;font-size:20px;margin-top:15px;display:none;" onclick="captureTemplate()">② 赤枠の中を通貨として登録する</button>
+    </div>
+    <h3>登録済みの通貨</h3>
+    <div id="templatesList"></div>
+    <div style="text-align:center; margin-top:40px;">
+      <button class="btn-back" onclick="goToProducts()">レジに戻る</button>
+    </div>
+  </div>
+</main>
+
+<!-- 通貨金額入力モーダル -->
+<div id="valueModal" class="modal">
+  <div class="modal-content">
+    <h2>このお金はいくらですか？</h2>
+    <input type="number" id="templateValue" placeholder="例: 100" inputmode="numeric">
+    <div style="display:flex;justify-content:space-around;margin-top:20px;">
+      <button class="btn-back" onclick="closeModal()">キャンセル</button>
+      <button class="btn-pay" style="width:auto;margin:0;" onclick="saveTemplate()">保存する</button>
+    </div>
+  </div>
+</div>
+
+<script>
+// ===== GAS API のURL =====
+const SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbw5E99Che3FMEq_Ivaiqp-0iscp2avNIwkX6ApkLTGJBrMEQf1Gao8fyQdVfUJSRkbw/exec';
+
+// ===== グローバル変数 =====
+let products = [];
+let cart = {};
+let changeTargetAmount = 0;
+let changeCurrentAmount = 0;
+let templates = [];
+let videoStream = null;
+let scanningInterval = null;
+let currentDetectedTotal = 0;
+let paymentTotal = 0;
+let bgFrame = null;
+let capturedHist = null;
+let capturedArea = 0;
+const STORAGE_KEY = 'self_checkout_templates_v1';
+
+// ===== OpenCV 準備完了コールバック =====
+function onOpenCvReady() {
+  document.getElementById('loadingText').innerText = 'しょうひんをよみこみ中...';
+  loadTemplates();
+  loadProducts();
+}
+
+// ===== テンプレート（通貨情報）のローカル保存 =====
+function loadTemplates() {
+  try {
+    const saved = localStorage.getItem(STORAGE_KEY);
+    templates = saved ? JSON.parse(saved) : [];
+  } catch(e) { templates = []; }
+}
+function saveTemplatesToStorage() {
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(templates));
+}
+
+// ===== 商品データをGASから取得 =====
+function loadProducts() {
+  fetch(SCRIPT_URL + '?api=getSelfProducts', { redirect: 'follow' })
+    .then(res => res.json())
+    .then(ps => {
+      products = Array.isArray(ps) ? ps : [];
+      document.getElementById('loading').style.display = 'none';
+      renderProducts();
+    })
+    .catch(e => {
+      document.getElementById('loadingText').innerHTML =
+        '❌ よみこみ失敗<br><span style="font-size:18px;">通信エラー: ' + e.message + '</span>';
+    });
+}
+
+// ===== ビュー切り替え =====
+function switchView(viewId) {
+  document.querySelectorAll('.view').forEach(el => el.classList.remove('active'));
+  document.getElementById(viewId).classList.add('active');
+  stopCamera();
+  if (scanningInterval) { clearInterval(scanningInterval); scanningInterval = null; }
+}
+
+// ===== 商品一覧の描画 =====
+function renderProducts() {
+  const el = document.getElementById('productsList');
+  el.innerHTML = '';
+  if (products.length === 0) {
+    el.innerHTML = '<div style="color:#888;font-size:20px;text-align:center;padding:20px;">スプレッドシートに商品を登録してください</div>';
+  }
+  products.forEach(p => {
+    const b = document.createElement('div');
+    b.className = 'product';
+    b.innerHTML = `<b>${escapeHtml(p.name)}</b><span>${p.price}えん</span>`;
+    b.onclick = () => addToCart(p.id);
+    el.appendChild(b);
+  });
+  renderCart();
+}
+
+function addToCart(id) { cart[id] = (cart[id] || 0) + 1; renderCart(); }
+
+function renderCart() {
+  const el = document.getElementById('cartItems');
+  const items = products.filter(p => cart[p.id]);
+  if (!items.length) {
+    el.innerHTML = '<div style="color:#888;font-size:20px;text-align:center;padding:10px;">えらんだ しょうひんが ここにでるよ</div>';
+  } else {
+    el.innerHTML = items.map(p =>
+      `<div class="cart-item">
+        <span>${escapeHtml(p.name)}</span>
+        <span>${cart[p.id]}こ</span>
+        <b>${p.price * cart[p.id]}えん</b>
+      </div>`
+    ).join('');
+  }
+  paymentTotal = items.reduce((s, p) => s + p.price * cart[p.id], 0);
+  document.getElementById('cartTotal').textContent = `ごうけい：${paymentTotal}えん`;
+  document.getElementById('btnGoCheckout').disabled = paymentTotal === 0;
+}
+
+function goToProducts() { cart = {}; renderCart(); switchView('view-products'); }
+
+// ===== お会計画面へ =====
+function goToCheckout() {
+  if (paymentTotal === 0) return;
+  document.getElementById('checkoutTotal').textContent = paymentTotal + 'えん';
+  document.getElementById('detectedTotal').textContent = '0';
+  document.getElementById('btnPay').disabled = true;
+  document.getElementById('checkoutInstruction').innerHTML =
+    '<span style="color:#E91E63;font-weight:bold;">つくえをきおく中... おかねをおかずに まってね！</span>';
+  currentDetectedTotal = 0;
+  switchView('view-checkout');
+  startCamera('videoElement', 'overlayCanvas', processCheckoutFrame).then(() => {
+    setTimeout(() => {
+      captureBackground(true);
+      document.getElementById('checkoutInstruction').innerHTML = 'カメラの下に おかねを おいてね 💰';
+    }, 2000);
+  });
+}
+
+// ===== おつり調整画面 =====
+function showChangeScreen(change) {
+  switchView('view-change');
+  changeTargetAmount = change;
+  changeCurrentAmount = 0;
+  document.getElementById('changeAmountLabel').textContent = change;
+  updateChangeCart();
+  const el = document.getElementById('changeProductsList');
+  el.innerHTML = '';
+  const tenYenProducts = products.filter(p => p.price === 10);
+  if (tenYenProducts.length === 0) {
+    alert('エラー：10円の商品が見つかりません。スプレッドシートで価格10円の商品を追加してください。');
+    finalizeSale(); return;
+  }
+  tenYenProducts.forEach(p => {
+    const b = document.createElement('div');
+    b.className = 'product';
+    b.innerHTML = `<b>${escapeHtml(p.name)}</b><span>${p.price}えん</span>`;
+    b.onclick = () => addTenYenItem(p.id);
+    el.appendChild(b);
+  });
+}
+
+function addTenYenItem(id) {
+  if (changeCurrentAmount + 10 > changeTargetAmount) return;
+  cart[id] = (cart[id] || 0) + 1;
+  changeCurrentAmount += 10;
+  updateChangeCart();
+}
+
+function updateChangeCart() {
+  const remain = changeTargetAmount - changeCurrentAmount;
+  document.getElementById('changeCartTotal').textContent = `のこりのおつり：${remain}えん`;
+  const btn = document.getElementById('btnFinishChange');
+  if (remain === 0) {
+    btn.disabled = false; btn.textContent = 'これで おかいけい！ 🎉'; btn.style.background = '#E91E63';
+  } else {
+    btn.disabled = true; btn.textContent = `まだ ${remain}えん ぶん えらんでね`; btn.style.background = '#ccc';
+  }
+}
+
+function cancelChange() { goToProducts(); }
+
+// ===== 会計処理 =====
+function processPayment() {
+  if (currentDetectedTotal < paymentTotal) { alert('いれたおかねが たりないよ！もっと おいてね 💰'); return; }
+  const change = currentDetectedTotal - paymentTotal;
+  if (change > 0) showChangeScreen(change); else finalizeSale();
+}
+
+function finishCheckout() { finalizeSale(); }
+
+function finalizeSale() {
+  document.getElementById('loading').style.display = 'flex';
+  document.getElementById('loadingText').innerText = 'けっさい中...';
+  const sale = Object.entries(cart).map(([id, qty]) => ({ id, qty }));
+  const cartParam = encodeURIComponent(JSON.stringify(sale));
+  fetch(SCRIPT_URL + '?api=recordSale&cart=' + cartParam, { redirect: 'follow' })
+    .then(res => res.json())
+    .then(res => {
+      document.getElementById('loading').style.display = 'none';
+      if (res.error) {
+        alert('エラーがおきたよ：' + res.error);
+      } else {
+        alert('✨ おかいけい できたよ！\nありがとうございました！ ✨');
+      }
+      goToProducts();
+    })
+    .catch(e => {
+      document.getElementById('loading').style.display = 'none';
+      alert('通信エラー：' + e.message);
+      goToProducts();
+    });
+}
+
+// ===== カメラ制御 =====
+function startCamera(videoId, canvasId, processFunc) {
+  const video = document.getElementById(videoId);
+  const canvas = document.getElementById(canvasId);
+  return navigator.mediaDevices.getUserMedia({
+    video: { facingMode: { ideal: 'environment' }, width: { ideal: 640 }, height: { ideal: 480 } },
+    audio: false
+  })
+  .catch(() => navigator.mediaDevices.getUserMedia({ video: true, audio: false }))
+  .then(stream => {
+    videoStream = stream;
+    video.srcObject = stream;
+    video.play();
+    return new Promise(resolve => {
+      video.onloadedmetadata = () => {
+        canvas.width = video.videoWidth;
+        canvas.height = video.videoHeight;
+        if (scanningInterval) clearInterval(scanningInterval);
+        scanningInterval = setInterval(() => {
+          if (video.readyState === video.HAVE_ENOUGH_DATA) processFunc(video, canvas);
+        }, 300);
+        resolve();
+      };
+    });
+  })
+  .catch(err => {
+    alert('カメラが起動できませんでした。\nブラウザのカメラ許可を確認してください。\n\nエラー: ' + err.message);
+  });
+}
+
+function stopCamera() {
+  if (videoStream) { videoStream.getTracks().forEach(t => t.stop()); videoStream = null; }
+  if (bgFrame) { bgFrame.delete(); bgFrame = null; }
+}
+
+// ===== 背景記憶（机の模様を無視するため） =====
+function captureBackground(isCheckout) {
+  const videoId = isCheckout ? 'videoElement' : 'adminVideoElement';
+  const video = document.getElementById(videoId);
+  if (video.readyState !== video.HAVE_ENOUGH_DATA) return;
+  const canvas = document.createElement('canvas');
+  canvas.width = video.videoWidth; canvas.height = video.videoHeight;
+  canvas.getContext('2d').drawImage(video, 0, 0, canvas.width, canvas.height);
+  if (bgFrame) bgFrame.delete();
+  let src = cv.imread(canvas);
+  bgFrame = new cv.Mat();
+  cv.cvtColor(src, bgFrame, cv.COLOR_RGBA2GRAY, 0);
+  cv.GaussianBlur(bgFrame, bgFrame, new cv.Size(21, 21), 0, 0, cv.BORDER_DEFAULT);
+  src.delete();
+  if (!isCheckout) {
+    alert('机の背景を記憶しました！\n次にお金を置いて、赤枠の中に入れて「②」を押してください。');
+    document.getElementById('btnAdminCapture').style.display = 'inline-block';
+    document.getElementById('adminTargetBox').style.display = 'block';
+  }
+}
+
+// ===== 画像処理（背景差分 + HSVヒストグラム） =====
+function extractFeatures(video, canvas, isCheckOutMode) {
+  const ctx = canvas.getContext('2d');
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  if (!bgFrame) return [];
+
+  const tmp = document.createElement('canvas');
+  tmp.width = canvas.width; tmp.height = canvas.height;
+  tmp.getContext('2d').drawImage(video, 0, 0, tmp.width, tmp.height);
+
+  let src = cv.imread(tmp);
+  let gray = new cv.Mat(), blur = new cv.Mat(), diff = new cv.Mat(), thresh = new cv.Mat();
+  let contours = new cv.MatVector(), hierarchy = new cv.Mat();
+
+  cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY, 0);
+  cv.GaussianBlur(gray, blur, new cv.Size(21, 21), 0, 0, cv.BORDER_DEFAULT);
+  cv.absdiff(bgFrame, blur, diff);
+  cv.threshold(diff, thresh, 30, 255, cv.THRESH_BINARY);
+
+  let kernel = cv.Mat.ones(5, 5, cv.CV_8U);
+  cv.dilate(thresh, thresh, kernel, new cv.Point(-1, -1), 2);
+  cv.erode(thresh, thresh, kernel, new cv.Point(-1, -1), 2);
+  cv.findContours(thresh, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
+
+  let detected = [];
+  for (let i = 0; i < contours.size(); i++) {
+    let cnt = contours.get(i);
+    let area = cv.contourArea(cnt);
+    if (area > 1500 && area < canvas.width * canvas.height * 0.5) {
+      let rect = cv.boundingRect(cnt);
+      if (!isCheckOutMode) {
+        let cx = rect.x + rect.width / 2, cy = rect.y + rect.height / 2;
+        if (Math.abs(cx - canvas.width / 2) > 100 || Math.abs(cy - canvas.height / 2) > 100) continue;
+      }
+      let roi = src.roi(rect), hsv = new cv.Mat();
+      cv.cvtColor(roi, hsv, cv.COLOR_RGBA2RGB);
+      cv.cvtColor(hsv, hsv, cv.COLOR_RGB2HSV);
+      let ch = new cv.MatVector(); cv.split(hsv, ch);
+      let hH = new cv.Mat(), sH = new cv.Mat(), mask = new cv.Mat();
+      cv.calcHist([ch.get(0)], [0], mask, hH, [180], [0, 180]); cv.normalize(hH, hH, 0, 1, cv.NORM_MINMAX);
+      cv.calcHist([ch.get(1)], [0], mask, sH, [256], [0, 256]); cv.normalize(sH, sH, 0, 1, cv.NORM_MINMAX);
+      detected.push({ rect, area, hArr: Array.from(hH.data32F), sArr: Array.from(sH.data32F) });
+      roi.delete(); hsv.delete(); ch.delete(); hH.delete(); sH.delete(); mask.delete();
+    }
+  }
+
+  detected.forEach(f => {
+    ctx.strokeStyle = isCheckOutMode ? '#00FF00' : '#FF0000';
+    ctx.lineWidth = 3;
+    ctx.strokeRect(f.rect.x, f.rect.y, f.rect.width, f.rect.height);
+  });
+
+  src.delete(); gray.delete(); blur.delete(); diff.delete(); thresh.delete();
+  contours.delete(); hierarchy.delete(); kernel.delete();
+  return detected;
+}
+
+// ===== 会計モードのフレーム処理 =====
+function processCheckoutFrame(video, canvas) {
+  let features = extractFeatures(video, canvas, true);
+  let totalDetected = 0;
+  let ctx = canvas.getContext('2d');
+  ctx.font = 'bold 26px Arial'; ctx.fillStyle = 'yellow'; ctx.strokeStyle = 'black'; ctx.lineWidth = 4;
+
+  features.forEach(feat => {
+    let bestMatch = -1, bestScore = Infinity;
+    templates.forEach(tpl => {
+      let dH = 0, dS = 0;
+      for (let i = 0; i < feat.hArr.length; i++) dH += (feat.hArr[i] - tpl.histH[i]) ** 2;
+      for (let i = 0; i < feat.sArr.length; i++) dS += (feat.sArr[i] - tpl.histS[i]) ** 2;
+      let dist = dH + dS;
+      let ar = feat.area / tpl.area;
+      if (dist < 20 && ar > 0.4 && ar < 2.5 && dist < bestScore) {
+        bestScore = dist; bestMatch = tpl.value;
+      }
+    });
+    if (bestMatch !== -1) {
+      totalDetected += bestMatch;
+      ctx.strokeText(bestMatch + 'えん', feat.rect.x + 4, feat.rect.y - 8);
+      ctx.fillText(bestMatch + 'えん', feat.rect.x + 4, feat.rect.y - 8);
+    }
+  });
+
+  currentDetectedTotal = totalDetected;
+  document.getElementById('detectedTotal').textContent = currentDetectedTotal;
+  const btn = document.getElementById('btnPay');
+  if (currentDetectedTotal >= paymentTotal && paymentTotal > 0) {
+    btn.disabled = false; btn.style.background = '#4CAF50';
+    btn.textContent = `けっさいする 💳（おつり ${currentDetectedTotal - paymentTotal}えん）`;
+  } else {
+    btn.disabled = true; btn.style.background = '#ccc';
+    btn.textContent = 'けっさいする 💳';
+  }
+}
+
+// ===== 管理モード =====
+function openAdmin() {
+  switchView('view-admin');
+  renderTemplates();
+  document.getElementById('btnAdminCapture').style.display = 'none';
+  document.getElementById('adminTargetBox').style.display = 'none';
+  startCamera('adminVideoElement', 'adminOverlayCanvas', (v, c) => extractFeatures(v, c, false));
+}
+
+function captureTemplate() {
+  const video = document.getElementById('adminVideoElement');
+  const canvas = document.getElementById('adminOverlayCanvas');
+  let features = extractFeatures(video, canvas, false);
+  if (features.length === 0) { alert('通貨を認識できませんでした。\n赤枠の中央にお金を置いてください。'); return; }
+  let tx = canvas.width / 2, ty = canvas.height / 2;
+  let best = features.sort((a, b) => {
+    let cxA = a.rect.x + a.rect.width / 2, cyA = a.rect.y + a.rect.height / 2;
+    let cxB = b.rect.x + b.rect.width / 2, cyB = b.rect.y + b.rect.height / 2;
+    return ((cxA - tx) ** 2 + (cyA - ty) ** 2) - ((cxB - tx) ** 2 + (cyB - ty) ** 2);
+  })[0];
+  capturedHist = { h: best.hArr, s: best.sArr };
+  capturedArea = best.area;
+  document.getElementById('templateValue').value = '';
+  document.getElementById('valueModal').classList.add('active');
+}
+
+function closeModal() { document.getElementById('valueModal').classList.remove('active'); capturedHist = null; }
+
+function saveTemplate() {
+  const val = Number(document.getElementById('templateValue').value);
+  if (!val || val <= 0) { alert('正しい金額（1以上）を入力してください'); return; }
+  templates.push({ value: val, histH: capturedHist.h, histS: capturedHist.s, area: capturedArea, id: Date.now() });
+  saveTemplatesToStorage(); closeModal(); renderTemplates();
+  alert(val + '円の通貨を登録しました！');
+}
+
+function deleteTemplate(id) {
+  if (!confirm('この通貨の登録を削除しますか？')) return;
+  templates = templates.filter(t => t.id !== id);
+  saveTemplatesToStorage(); renderTemplates();
+}
+
+function renderTemplates() {
+  const el = document.getElementById('templatesList');
+  if (!templates.length) { el.innerHTML = '<p style="color:#888;">まだ登録されていません。</p>'; return; }
+  el.innerHTML = templates.map(t =>
+    `<div class="admin-item">
+      <span style="font-size:24px;font-weight:bold;">💴 ${t.value}円</span>
+      <div class="admin-actions">
+        <button onclick="deleteTemplate(${t.id})" style="background:#f44336;color:white;border:none;border-radius:8px;cursor:pointer;">削除</button>
+      </div>
+    </div>`
+  ).join('');
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+</script>
+<!-- OpenCV.js（一番最後に読み込む） -->
+<script async src="https://cdn.jsdelivr.net/npm/@techstark/opencv-js/dist/opencv.js" onload="onOpenCvReady()"></script>
+</body>
+</html>
