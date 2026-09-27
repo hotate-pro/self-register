@@ -1,0 +1,51 @@
+name: Vendor OpenCV.js
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  vendor-opencv:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download OpenCV.js
+        run: |
+          set -e
+          curl -L --fail --silent --show-error \
+            https://docs.opencv.org/4.13.0/opencv.js \
+            -o opencv.js
+
+          test -s opencv.js
+
+          SIZE=$(wc -c < opencv.js)
+          echo "opencv.js size: $SIZE bytes"
+
+          if [ "$SIZE" -lt 5000000 ]; then
+            echo "Downloaded file is unexpectedly small."
+            exit 1
+          fi
+
+      - name: Commit OpenCV.js
+        run: |
+          set -e
+
+          if git diff --quiet -- opencv.js && git ls-files --error-unmatch opencv.js >/dev/null 2>&1; then
+            echo "opencv.js is already up to date."
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add opencv.js
+          git commit -m "Vendor OpenCV.js [skip ci]" || exit 0
+          git push
