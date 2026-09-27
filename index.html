@@ -117,9 +117,17 @@ canvas { position: absolute; top: 0; left: 0; width: 100%; height: 100%; z-index
       <div id="adminTargetBox" style="position:absolute;top:50%;left:50%;width:150px;height:150px;border:4px solid red;transform:translate(-50%,-50%);z-index:20;pointer-events:none;display:none;"></div>
     </div>
     <div style="text-align:center; margin-bottom:30px;">
+      <div id="adminBackgroundStatus" style="font-size:22px;font-weight:bold;margin-bottom:15px;">
+        背景：🔴 まだ記憶していません
+      </div>
       <button class="btn-back" style="width:auto;font-size:20px;background:#2196F3;" onclick="captureBackground(false)">① つくえ（背景）を記憶する</button>
       <br>
-      <button class="btn-pay" id="btnAdminCapture" style="width:auto;font-size:20px;margin-top:15px;display:none;" onclick="captureTemplate()">② 赤枠の中を通貨として登録する</button>
+      <button class="btn-pay" id="btnAdminCapture" style="width:auto;font-size:20px;margin-top:15px;" onclick="captureTemplate()" disabled>
+        ② まず①で背景を記憶してください
+      </button>
+      <div id="adminCaptureStatus" style="margin-top:12px;font-size:18px;color:#666;">
+        先に①を押すと、②が使えるようになります。
+      </div>
     </div>
     <h3>登録済みの通貨</h3>
     <div id="templatesList"></div>
@@ -228,6 +236,7 @@ let scanningInterval = null;
 let currentDetectedTotal = 0;
 let paymentTotal = 0;
 let bgFrame = null;
+let adminBackgroundReady = false;
 let capturedHist = null;
 let capturedArea = 0;
 const STORAGE_KEY = 'self_checkout_templates_v1';
@@ -428,29 +437,82 @@ function finalizeSale() {
 function startCamera(videoId, canvasId, processFunc) {
   const video = document.getElementById(videoId);
   const canvas = document.getElementById(canvasId);
+
   return navigator.mediaDevices.getUserMedia({
-    video: { facingMode: { ideal: 'environment' }, width: { ideal: 640 }, height: { ideal: 480 } },
+    video: {
+      facingMode: { ideal: 'environment' },
+      width: { ideal: 640 },
+      height: { ideal: 480 }
+    },
     audio: false
   })
-  .catch(() => navigator.mediaDevices.getUserMedia({ video: true, audio: false }))
+  .catch(() =>
+    navigator.mediaDevices.getUserMedia({
+      video: true,
+      audio: false
+    })
+  )
   .then(stream => {
     videoStream = stream;
     video.srcObject = stream;
-    video.play();
+
+    const setupVideo = () => {
+      if (!video.videoWidth || !video.videoHeight) return false;
+
+      canvas.width = video.videoWidth;
+      canvas.height = video.videoHeight;
+
+      if (scanningInterval) {
+        clearInterval(scanningInterval);
+      }
+
+      scanningInterval = setInterval(() => {
+        if (
+          video.readyState === video.HAVE_ENOUGH_DATA &&
+          video.videoWidth &&
+          video.videoHeight
+        ) {
+          processFunc(video, canvas);
+        }
+      }, 300);
+
+      return true;
+    };
+
     return new Promise(resolve => {
-      video.onloadedmetadata = () => {
-        canvas.width = video.videoWidth;
-        canvas.height = video.videoHeight;
-        if (scanningInterval) clearInterval(scanningInterval);
-        scanningInterval = setInterval(() => {
-          if (video.readyState === video.HAVE_ENOUGH_DATA) processFunc(video, canvas);
-        }, 300);
+      // loadedmetadataを取り逃してもreadyStateで拾う
+      if (setupVideo()) {
         resolve();
+        return;
+      }
+
+      const onReady = () => {
+        if (setupVideo()) {
+          video.removeEventListener('loadedmetadata', onReady);
+          resolve();
+        }
       };
+
+      video.addEventListener('loadedmetadata', onReady, { once: true });
+
+      video.play().catch(() => {});
+
+      // 一部ブラウザ向けの保険
+      setTimeout(() => {
+        if (setupVideo()) {
+          video.removeEventListener('loadedmetadata', onReady);
+          resolve();
+        }
+      }, 1000);
     });
   })
   .catch(err => {
-    alert('カメラが起動できませんでした。\nブラウザのカメラ許可を確認してください。\n\nエラー: ' + err.message);
+    alert(
+      'カメラが起動できませんでした。\n' +
+      'ブラウザのカメラ許可を確認してください。\n\n' +
+      'エラー: ' + err.message
+    );
+    throw err;
   });
 }
 
@@ -463,22 +525,83 @@ function stopCamera() {
 // 背景記憶（机の模様を無視するため）
 // ========================================
 function captureBackground(isCheckout) {
-  const video = document.getElementById(isCheckout ? 'videoElement' : 'adminVideoElement');
-  if (video.readyState !== video.HAVE_ENOUGH_DATA) return;
-  const c = document.createElement('canvas');
-  c.width = video.videoWidth; c.height = video.videoHeight;
-  c.getContext('2d').drawImage(video, 0, 0, c.width, c.height);
-  if (bgFrame) bgFrame.delete();
-  let src = cv.imread(c);
-  bgFrame = new cv.Mat();
-  cv.cvtColor(src, bgFrame, cv.COLOR_RGBA2GRAY, 0);
-  cv.GaussianBlur(bgFrame, bgFrame, new cv.Size(21, 21), 0, 0, cv.BORDER_DEFAULT);
-  src.delete();
-  if (!isCheckout) {
-    alert('机の背景を記憶しました！\nお金を赤枠の中央に置いて「②」を押してください。');
-    document.getElementById('btnAdminCapture').style.display = 'inline-block';
-    document.getElementById('adminTargetBox').style.display = 'block';
+  const video = document.getElementById(
+    isCheckout ? 'videoElement' : 'adminVideoElement'
+  );
+
+  if (!video || video.readyState !== video.HAVE_ENOUGH_DATA || !video.videoWidth) {
+    if (!isCheckout) {
+      document.getElementById('adminBackgroundStatus').textContent =
+        '背景：⚠️ カメラの映像をまだ取得できません。少し待ってからもう一度①を押してください。';
+    }
+    return false;
   }
+
+  const c = document.createElement('canvas');
+  c.width = video.videoWidth;
+  c.height = video.videoHeight;
+
+  c.getContext('2d').drawImage(
+    video,
+    0,
+    0,
+    c.width,
+    c.height
+  );
+
+  if (bgFrame) {
+    bgFrame.delete();
+    bgFrame = null;
+  }
+
+  let src = cv.imread(c);
+
+  bgFrame = new cv.Mat();
+
+  cv.cvtColor(
+    src,
+    bgFrame,
+    cv.COLOR_RGBA2GRAY,
+    0
+  );
+
+  cv.GaussianBlur(
+    bgFrame,
+    bgFrame,
+    new cv.Size(21, 21),
+    0,
+    0,
+    cv.BORDER_DEFAULT
+  );
+
+  src.delete();
+
+  if (!isCheckout) {
+    adminBackgroundReady = true;
+
+    const captureBtn =
+      document.getElementById('btnAdminCapture');
+
+    captureBtn.disabled = false;
+    captureBtn.textContent =
+      '② 赤枠の中を通貨として登録する';
+
+    document.getElementById('adminBackgroundStatus').textContent =
+      '背景：🟢 記憶済み';
+
+    document.getElementById('adminCaptureStatus').textContent =
+      '赤枠の中に通貨を置いて、②を押してください。';
+
+    document.getElementById('adminTargetBox').style.display =
+      'block';
+
+    alert(
+      '机の背景を記憶しました！\n\n' +
+      '次に赤枠の中央へ通貨を置いて、②を押してください。'
+    );
+  }
+
+  return true;
 }
 
 // ========================================
@@ -590,12 +713,35 @@ function processCheckoutFrame(video, canvas) {
 function openAdmin() {
   switchView('view-admin');
   renderTemplates();
-  document.getElementById('btnAdminCapture').style.display = 'none';
+
+  // 管理画面を開くたびに背景状態をリセット
+  adminBackgroundReady = false;
+  if (bgFrame) {
+    bgFrame.delete();
+    bgFrame = null;
+  }
+
+  const captureBtn = document.getElementById('btnAdminCapture');
+  captureBtn.disabled = true;
+  captureBtn.textContent = '② まず①で背景を記憶してください';
+
+  document.getElementById('adminBackgroundStatus').textContent =
+    '背景：🔴 まだ記憶していません';
+
+  document.getElementById('adminCaptureStatus').textContent =
+    '先に①を押すと、②が使えるようになります。';
+
   document.getElementById('adminTargetBox').style.display = 'none';
+
   startCamera('adminVideoElement', 'adminOverlayCanvas', (v, c) => extractFeatures(v, c, false));
 }
 
 function captureTemplate() {
+  if (!adminBackgroundReady || !bgFrame) {
+    alert('先に①「つくえ（背景）を記憶する」を押してください。');
+    return;
+  }
+
   const video = document.getElementById('adminVideoElement');
   const canvas = document.getElementById('adminOverlayCanvas');
   let features = extractFeatures(video, canvas, false);
