@@ -33,6 +33,7 @@ jobs:
           emcmake python3 opencv-src/platforms/js/build_js.py build \
             --build_wasm \
             --disable_single_file \
+            --config=opencv-minimal-whitelist.json \
             --cmake_option=-DBUILD_opencv_calib3d=OFF \
             --cmake_option=-DBUILD_opencv_dnn=OFF \
             --cmake_option=-DBUILD_opencv_features2d=OFF \
