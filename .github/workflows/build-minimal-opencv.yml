@@ -25,7 +25,7 @@ jobs:
 
       - name: Build only core + imgproc
         run: |
-          set -euxo pipefail
+          set -eux
 
           emcc --version
           cmake --version
