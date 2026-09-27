@@ -1,0 +1,27 @@
+{
+  "core": {
+    "whitelist": {
+      "": [
+        "absdiff",
+        "normalize",
+        "split"
+      ],
+      "Algorithm": []
+    }
+  },
+  "imgproc": {
+    "whitelist": {
+      "": [
+        "boundingRect",
+        "calcHist",
+        "contourArea",
+        "cvtColor",
+        "dilate",
+        "erode",
+        "findContours",
+        "GaussianBlur",
+        "threshold"
+      ]
+    }
+  }
+}
