@@ -110,12 +110,6 @@ jobs:
           test -s opencv.wasm
           ls -lh opencv.js opencv.wasm
 
-      - name: Install generated OpenCV into site
-        run: |
-          set -eux
-          cp opencv.js ./opencv.js
-          cp opencv.wasm ./opencv.wasm
-
       - name: Commit generated OpenCV
         run: |
           set -euxo pipefail
