@@ -55,7 +55,7 @@ jobs:
             --cmake_option=-DBUILD_PACKAGE=OFF \
             --cmake_option=-DWITH_PTHREADS_PF=OFF \
             --cmake_option=-DBUILD_ZLIB=OFF \
-            --build_flags="-O3 -flto -s ENVIRONMENT=web -s USE_PTHREADS=0 -s ALLOW_MEMORY_GROWTH=1 -s INITIAL_MEMORY=33554432"
+            --build_flags="-O3 -flto -s ENVIRONMENT=web -s USE_PTHREADS=0 -s FILESYSTEM=0 -s MALLOC=emmalloc -s ALLOW_MEMORY_GROWTH=1 -s INITIAL_MEMORY=33554432"
 
       - name: Extract external WASM
         run: |
