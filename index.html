@@ -3,7 +3,6 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<link rel="preload" href="./opencv.wasm" as="fetch" type="application/wasm">
 <title>セルフレジ</title>
 <style>
 * { box-sizing: border-box; }
@@ -268,12 +267,48 @@ let openCvReadyPromise = null;
 let resolveOpenCvReady = null;
 let rejectOpenCvReady = null;
 let openCvInitError = null;
-const openCvLoadStartedAt = performance.now();
+let openCvLoadStartedAt = 0;
+let openCvScriptLoading = false;
 
-openCvReadyPromise = new Promise((resolve, reject) => {
-  resolveOpenCvReady = resolve;
-  rejectOpenCvReady = reject;
-});
+function startOpenCvLoad() {
+  if (openCvReady) return Promise.resolve(window.cv);
+  if (openCvReadyPromise) return openCvReadyPromise;
+
+  openCvLoadStartedAt = performance.now();
+  openCvScriptLoading = true;
+
+  openCvReadyPromise = new Promise((resolve, reject) => {
+    resolveOpenCvReady = resolve;
+    rejectOpenCvReady = reject;
+  });
+
+  // OpenCVを必要になった瞬間だけロードする。
+  // これで通常のレジ画面のリロードはWASMダウンロードに巻き込まれない。
+  window.Module = {
+    locateFile: function(path) {
+      return new URL(path, new URL('./opencv.js', document.baseURI)).href;
+    },
+    onRuntimeInitialized: function() {
+      openCvScriptLoading = false;
+      onOpenCvReady();
+    },
+    onAbort: function(reason) {
+      openCvScriptLoading = false;
+      failOpenCvReady(reason);
+    }
+  };
+
+  const script = document.createElement('script');
+  script.async = true;
+  script.src = './opencv.js';
+  script.onerror = function() {
+    openCvScriptLoading = false;
+    failOpenCvReady('opencv.jsの読み込みに失敗しました。');
+  };
+  document.head.appendChild(script);
+
+  return openCvReadyPromise;
+}
 
 function finishOpenCvReady() {
   if (openCvReady) return true;
@@ -343,8 +378,10 @@ function ensureOpenCvReady(timeoutMs = 30000) {
   if (openCvReady) return Promise.resolve(window.cv);
   if (openCvInitError) return Promise.reject(openCvInitError);
 
+  const loadPromise = startOpenCvLoad();
+
   return Promise.race([
-    openCvReadyPromise,
+    loadPromise,
 
     new Promise((_, reject) => {
       setTimeout(() => {
@@ -1083,32 +1120,7 @@ function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 }
 </script>
-<!-- OpenCV.js / external WASM -->
-<script>
-  // OpenCV.jsはブロッキングさせず、WASMは同一ディレクトリから取得。
-  // onRuntimeInitialized が「WebAssembly instantiate + OpenCV runtime 初期化完了」の合図。
-  window.Module = {
-    // OpenCV.jsとWASMは同一ディレクトリから取得。
-    // GitHub Pagesのプロジェクトサブパスでも絶対URLを正しく解決する。
-    locateFile: function(path) {
-      return new URL(path, new URL('./opencv.js', document.baseURI)).href;
-    },
-    onRuntimeInitialized: function() {
-      onOpenCvReady();
-    },
-    onAbort: function(reason) {
-      failOpenCvReady(reason);
-    }
-  };
-</script>
-
-<!-- バージョン固定: 4.13.0。opencv.js は ./opencv.wasm を読む -->
-<script
-  async
-  src="./opencv.js"
-  onerror="failOpenCvReady('opencv.jsの読み込みに失敗しました。')"
-></script>
-
+<!-- OpenCV.js / external WASM は会計・管理画面を開いた時だけ動的ロードします。 -->
 <script>
   // OpenCVは裏で起動。商品データは従来どおり即座に取得開始。
   loadTemplates();
