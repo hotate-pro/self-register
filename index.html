@@ -35,7 +35,6 @@ canvas { position: absolute; top: 0; left: 0; width: 100%; height: 100%; z-index
 .btn-pay:active { transform: translateY(6px); box-shadow: 0 0 0; }
 .btn-pay:disabled { background: #ccc; box-shadow: 0 6px 0 #aaa; cursor: not-allowed; }
 .admin-item { background: white; padding: 15px; border: 2px solid #ddd; border-radius: 10px; margin-bottom: 10px; display: flex; justify-content: space-between; align-items: center; }
-.admin-actions button { font-size: 18px; padding: 10px 20px; margin-left: 10px; }
 .modal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.8); z-index: 100; justify-content: center; align-items: center; }
 .modal.active { display: flex; }
 .modal-content { background: white; padding: 30px; border-radius: 20px; max-width: 500px; width: 90%; text-align: center; }
@@ -111,14 +110,14 @@ canvas { position: absolute; top: 0; left: 0; width: 100%; height: 100%; z-index
   <div id="view-admin" class="view">
     <h2>⚙️ 管理画面（通貨の登録）</h2>
     <p>机の木目など関係なく検知できます。<br>
-    まず通貨を置かずに「背景を記憶」を押し、その後通貨を置いて登録してください。</p>
+    まず通貨を置かずに「①背景を記憶」を押し、その後通貨を赤枠の中に置いて「②登録」してください。</p>
     <div class="camera-container">
       <video id="adminVideoElement" autoplay playsinline></video>
       <canvas id="adminOverlayCanvas"></canvas>
       <div id="adminTargetBox" style="position:absolute;top:50%;left:50%;width:150px;height:150px;border:4px solid red;transform:translate(-50%,-50%);z-index:20;pointer-events:none;display:none;"></div>
     </div>
     <div style="text-align:center; margin-bottom:30px;">
-      <button class="btn-back" id="btnAdminBg" style="width:auto;font-size:20px;background:#2196F3;" onclick="captureBackground(false)">① つくえ（背景）を記憶する</button>
+      <button class="btn-back" style="width:auto;font-size:20px;background:#2196F3;" onclick="captureBackground(false)">① つくえ（背景）を記憶する</button>
       <br>
       <button class="btn-pay" id="btnAdminCapture" style="width:auto;font-size:20px;margin-top:15px;display:none;" onclick="captureTemplate()">② 赤枠の中を通貨として登録する</button>
     </div>
@@ -143,10 +142,48 @@ canvas { position: absolute; top: 0; left: 0; width: 100%; height: 100%; z-index
 </div>
 
 <script>
-// ===== GAS API のURL =====
-const SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbw5E99Che3FMEq_Ivaiqp-0iscp2avNIwkX6ApkLTGJBrMEQf1Gao8fyQdVfUJSRkbw/exec';
+// ========================================
+// ★ GASのデプロイURL（新しいデプロイのたびに更新）
+// ========================================
+const SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbx0igBPJJfix4sCca7DwGTvD8lQeRVmjp2gf2rOhMOyhM0nJKDROpuuN7AoGS3AS_Lt/exec';
 
-// ===== グローバル変数 =====
+// ========================================
+// JSONP通信（CORSを回避する方法）
+// ========================================
+function gasJsonp(params) {
+  return new Promise((resolve, reject) => {
+    const cbName = '_gasCb_' + Date.now() + '_' + Math.random().toString(36).slice(2);
+    const script = document.createElement('script');
+
+    const timer = setTimeout(() => {
+      cleanup();
+      reject(new Error('タイムアウト（15秒）しました。通信環境を確認してください。'));
+    }, 15000);
+
+    window[cbName] = function(data) {
+      cleanup();
+      resolve(data);
+    };
+
+    function cleanup() {
+      clearTimeout(timer);
+      delete window[cbName];
+      if (script.parentNode) script.parentNode.removeChild(script);
+    }
+
+    const qs = Object.entries(Object.assign({}, params, { callback: cbName }))
+      .map(([k, v]) => encodeURIComponent(k) + '=' + encodeURIComponent(v))
+      .join('&');
+
+    script.src = SCRIPT_URL + '?' + qs;
+    script.onerror = () => { cleanup(); reject(new Error('スクリプト読み込みエラー')); };
+    document.body.appendChild(script);
+  });
+}
+
+// ========================================
+// グローバル変数
+// ========================================
 let products = [];
 let cart = {};
 let changeTargetAmount = 0;
@@ -161,28 +198,31 @@ let capturedHist = null;
 let capturedArea = 0;
 const STORAGE_KEY = 'self_checkout_templates_v1';
 
-// ===== OpenCV 準備完了コールバック =====
+// ========================================
+// OpenCV 準備完了
+// ========================================
 function onOpenCvReady() {
   document.getElementById('loadingText').innerText = 'しょうひんをよみこみ中...';
   loadTemplates();
   loadProducts();
 }
 
-// ===== テンプレート（通貨情報）のローカル保存 =====
+// ========================================
+// テンプレート（通貨）のローカル保存
+// ========================================
 function loadTemplates() {
-  try {
-    const saved = localStorage.getItem(STORAGE_KEY);
-    templates = saved ? JSON.parse(saved) : [];
-  } catch(e) { templates = []; }
+  try { templates = JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]'); }
+  catch(e) { templates = []; }
 }
 function saveTemplatesToStorage() {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(templates));
 }
 
-// ===== 商品データをGASから取得 =====
+// ========================================
+// 商品データをGASから取得（JSONP）
+// ========================================
 function loadProducts() {
-  fetch(SCRIPT_URL + '?api=getSelfProducts', { redirect: 'follow' })
-    .then(res => res.json())
+  gasJsonp({ api: 'getSelfProducts' })
     .then(ps => {
       products = Array.isArray(ps) ? ps : [];
       document.getElementById('loading').style.display = 'none';
@@ -190,11 +230,13 @@ function loadProducts() {
     })
     .catch(e => {
       document.getElementById('loadingText').innerHTML =
-        '❌ よみこみ失敗<br><span style="font-size:18px;">通信エラー: ' + e.message + '</span>';
+        '❌ よみこみ失敗<br><span style="font-size:18px;">' + escapeHtml(e.message) + '</span>';
     });
 }
 
-// ===== ビュー切り替え =====
+// ========================================
+// ビュー切り替え
+// ========================================
 function switchView(viewId) {
   document.querySelectorAll('.view').forEach(el => el.classList.remove('active'));
   document.getElementById(viewId).classList.add('active');
@@ -202,11 +244,13 @@ function switchView(viewId) {
   if (scanningInterval) { clearInterval(scanningInterval); scanningInterval = null; }
 }
 
-// ===== 商品一覧の描画 =====
+// ========================================
+// 商品・カート画面
+// ========================================
 function renderProducts() {
   const el = document.getElementById('productsList');
   el.innerHTML = '';
-  if (products.length === 0) {
+  if (!products.length) {
     el.innerHTML = '<div style="color:#888;font-size:20px;text-align:center;padding:20px;">スプレッドシートに商品を登録してください</div>';
   }
   products.forEach(p => {
@@ -224,17 +268,9 @@ function addToCart(id) { cart[id] = (cart[id] || 0) + 1; renderCart(); }
 function renderCart() {
   const el = document.getElementById('cartItems');
   const items = products.filter(p => cart[p.id]);
-  if (!items.length) {
-    el.innerHTML = '<div style="color:#888;font-size:20px;text-align:center;padding:10px;">えらんだ しょうひんが ここにでるよ</div>';
-  } else {
-    el.innerHTML = items.map(p =>
-      `<div class="cart-item">
-        <span>${escapeHtml(p.name)}</span>
-        <span>${cart[p.id]}こ</span>
-        <b>${p.price * cart[p.id]}えん</b>
-      </div>`
-    ).join('');
-  }
+  el.innerHTML = items.length
+    ? items.map(p => `<div class="cart-item"><span>${escapeHtml(p.name)}</span><span>${cart[p.id]}こ</span><b>${p.price * cart[p.id]}えん</b></div>`).join('')
+    : '<div style="color:#888;font-size:20px;text-align:center;padding:10px;">えらんだ しょうひんが ここにでるよ</div>';
   paymentTotal = items.reduce((s, p) => s + p.price * cart[p.id], 0);
   document.getElementById('cartTotal').textContent = `ごうけい：${paymentTotal}えん`;
   document.getElementById('btnGoCheckout').disabled = paymentTotal === 0;
@@ -242,9 +278,11 @@ function renderCart() {
 
 function goToProducts() { cart = {}; renderCart(); switchView('view-products'); }
 
-// ===== お会計画面へ =====
+// ========================================
+// お会計（カメラ）画面
+// ========================================
 function goToCheckout() {
-  if (paymentTotal === 0) return;
+  if (!paymentTotal) return;
   document.getElementById('checkoutTotal').textContent = paymentTotal + 'えん';
   document.getElementById('detectedTotal').textContent = '0';
   document.getElementById('btnPay').disabled = true;
@@ -260,7 +298,9 @@ function goToCheckout() {
   });
 }
 
-// ===== おつり調整画面 =====
+// ========================================
+// おつり調整画面
+// ========================================
 function showChangeScreen(change) {
   switchView('view-change');
   changeTargetAmount = change;
@@ -269,12 +309,12 @@ function showChangeScreen(change) {
   updateChangeCart();
   const el = document.getElementById('changeProductsList');
   el.innerHTML = '';
-  const tenYenProducts = products.filter(p => p.price === 10);
-  if (tenYenProducts.length === 0) {
-    alert('エラー：10円の商品が見つかりません。スプレッドシートで価格10円の商品を追加してください。');
+  const tenYen = products.filter(p => p.price === 10);
+  if (!tenYen.length) {
+    alert('エラー：10円の商品が見つかりません。\nスプレッドシートに価格10円の商品を追加してください。');
     finalizeSale(); return;
   }
-  tenYenProducts.forEach(p => {
+  tenYen.forEach(p => {
     const b = document.createElement('div');
     b.className = 'product';
     b.innerHTML = `<b>${escapeHtml(p.name)}</b><span>${p.price}えん</span>`;
@@ -295,15 +335,21 @@ function updateChangeCart() {
   document.getElementById('changeCartTotal').textContent = `のこりのおつり：${remain}えん`;
   const btn = document.getElementById('btnFinishChange');
   if (remain === 0) {
-    btn.disabled = false; btn.textContent = 'これで おかいけい！ 🎉'; btn.style.background = '#E91E63';
+    btn.disabled = false;
+    btn.textContent = 'これで おかいけい！ 🎉';
+    btn.style.background = '#E91E63';
   } else {
-    btn.disabled = true; btn.textContent = `まだ ${remain}えん ぶん えらんでね`; btn.style.background = '#ccc';
+    btn.disabled = true;
+    btn.textContent = `まだ ${remain}えん ぶん えらんでね`;
+    btn.style.background = '#ccc';
   }
 }
 
 function cancelChange() { goToProducts(); }
 
-// ===== 会計処理 =====
+// ========================================
+// 会計処理
+// ========================================
 function processPayment() {
   if (currentDetectedTotal < paymentTotal) { alert('いれたおかねが たりないよ！もっと おいてね 💰'); return; }
   const change = currentDetectedTotal - paymentTotal;
@@ -316,9 +362,7 @@ function finalizeSale() {
   document.getElementById('loading').style.display = 'flex';
   document.getElementById('loadingText').innerText = 'けっさい中...';
   const sale = Object.entries(cart).map(([id, qty]) => ({ id, qty }));
-  const cartParam = encodeURIComponent(JSON.stringify(sale));
-  fetch(SCRIPT_URL + '?api=recordSale&cart=' + cartParam, { redirect: 'follow' })
-    .then(res => res.json())
+  gasJsonp({ api: 'recordSale', cart: JSON.stringify(sale) })
     .then(res => {
       document.getElementById('loading').style.display = 'none';
       if (res.error) {
@@ -335,7 +379,9 @@ function finalizeSale() {
     });
 }
 
-// ===== カメラ制御 =====
+// ========================================
+// カメラ制御
+// ========================================
 function startCamera(videoId, canvasId, processFunc) {
   const video = document.getElementById(videoId);
   const canvas = document.getElementById(canvasId);
@@ -370,28 +416,31 @@ function stopCamera() {
   if (bgFrame) { bgFrame.delete(); bgFrame = null; }
 }
 
-// ===== 背景記憶（机の模様を無視するため） =====
+// ========================================
+// 背景記憶（机の模様を無視するため）
+// ========================================
 function captureBackground(isCheckout) {
-  const videoId = isCheckout ? 'videoElement' : 'adminVideoElement';
-  const video = document.getElementById(videoId);
+  const video = document.getElementById(isCheckout ? 'videoElement' : 'adminVideoElement');
   if (video.readyState !== video.HAVE_ENOUGH_DATA) return;
-  const canvas = document.createElement('canvas');
-  canvas.width = video.videoWidth; canvas.height = video.videoHeight;
-  canvas.getContext('2d').drawImage(video, 0, 0, canvas.width, canvas.height);
+  const c = document.createElement('canvas');
+  c.width = video.videoWidth; c.height = video.videoHeight;
+  c.getContext('2d').drawImage(video, 0, 0, c.width, c.height);
   if (bgFrame) bgFrame.delete();
-  let src = cv.imread(canvas);
+  let src = cv.imread(c);
   bgFrame = new cv.Mat();
   cv.cvtColor(src, bgFrame, cv.COLOR_RGBA2GRAY, 0);
   cv.GaussianBlur(bgFrame, bgFrame, new cv.Size(21, 21), 0, 0, cv.BORDER_DEFAULT);
   src.delete();
   if (!isCheckout) {
-    alert('机の背景を記憶しました！\n次にお金を置いて、赤枠の中に入れて「②」を押してください。');
+    alert('机の背景を記憶しました！\nお金を赤枠の中央に置いて「②」を押してください。');
     document.getElementById('btnAdminCapture').style.display = 'inline-block';
     document.getElementById('adminTargetBox').style.display = 'block';
   }
 }
 
-// ===== 画像処理（背景差分 + HSVヒストグラム） =====
+// ========================================
+// 画像処理（背景差分 + HSVヒストグラム）
+// ========================================
 function extractFeatures(video, canvas, isCheckOutMode) {
   const ctx = canvas.getContext('2d');
   ctx.clearRect(0, 0, canvas.width, canvas.height);
@@ -409,7 +458,6 @@ function extractFeatures(video, canvas, isCheckOutMode) {
   cv.GaussianBlur(gray, blur, new cv.Size(21, 21), 0, 0, cv.BORDER_DEFAULT);
   cv.absdiff(bgFrame, blur, diff);
   cv.threshold(diff, thresh, 30, 255, cv.THRESH_BINARY);
-
   let kernel = cv.Mat.ones(5, 5, cv.CV_8U);
   cv.dilate(thresh, thresh, kernel, new cv.Point(-1, -1), 2);
   cv.erode(thresh, thresh, kernel, new cv.Point(-1, -1), 2);
@@ -448,12 +496,17 @@ function extractFeatures(video, canvas, isCheckOutMode) {
   return detected;
 }
 
-// ===== 会計モードのフレーム処理 =====
+// ========================================
+// 会計カメラのフレーム処理
+// ========================================
 function processCheckoutFrame(video, canvas) {
   let features = extractFeatures(video, canvas, true);
   let totalDetected = 0;
   let ctx = canvas.getContext('2d');
-  ctx.font = 'bold 26px Arial'; ctx.fillStyle = 'yellow'; ctx.strokeStyle = 'black'; ctx.lineWidth = 4;
+  ctx.font = 'bold 26px Arial';
+  ctx.fillStyle = 'yellow';
+  ctx.strokeStyle = 'black';
+  ctx.lineWidth = 4;
 
   features.forEach(feat => {
     let bestMatch = -1, bestScore = Infinity;
@@ -478,15 +531,19 @@ function processCheckoutFrame(video, canvas) {
   document.getElementById('detectedTotal').textContent = currentDetectedTotal;
   const btn = document.getElementById('btnPay');
   if (currentDetectedTotal >= paymentTotal && paymentTotal > 0) {
-    btn.disabled = false; btn.style.background = '#4CAF50';
+    btn.disabled = false;
+    btn.style.background = '#4CAF50';
     btn.textContent = `けっさいする 💳（おつり ${currentDetectedTotal - paymentTotal}えん）`;
   } else {
-    btn.disabled = true; btn.style.background = '#ccc';
+    btn.disabled = true;
+    btn.style.background = '#ccc';
     btn.textContent = 'けっさいする 💳';
   }
 }
 
-// ===== 管理モード =====
+// ========================================
+// 管理モード
+// ========================================
 function openAdmin() {
   switchView('view-admin');
   renderTemplates();
@@ -499,12 +556,12 @@ function captureTemplate() {
   const video = document.getElementById('adminVideoElement');
   const canvas = document.getElementById('adminOverlayCanvas');
   let features = extractFeatures(video, canvas, false);
-  if (features.length === 0) { alert('通貨を認識できませんでした。\n赤枠の中央にお金を置いてください。'); return; }
+  if (!features.length) { alert('通貨を認識できませんでした。\n赤枠の中央にお金を置いてください。'); return; }
   let tx = canvas.width / 2, ty = canvas.height / 2;
   let best = features.sort((a, b) => {
-    let cxA = a.rect.x + a.rect.width / 2, cyA = a.rect.y + a.rect.height / 2;
-    let cxB = b.rect.x + b.rect.width / 2, cyB = b.rect.y + b.rect.height / 2;
-    return ((cxA - tx) ** 2 + (cyA - ty) ** 2) - ((cxB - tx) ** 2 + (cyB - ty) ** 2);
+    let da = (a.rect.x + a.rect.width / 2 - tx) ** 2 + (a.rect.y + a.rect.height / 2 - ty) ** 2;
+    let db = (b.rect.x + b.rect.width / 2 - tx) ** 2 + (b.rect.y + b.rect.height / 2 - ty) ** 2;
+    return da - db;
   })[0];
   capturedHist = { h: best.hArr, s: best.sArr };
   capturedArea = best.area;
@@ -534,8 +591,8 @@ function renderTemplates() {
   el.innerHTML = templates.map(t =>
     `<div class="admin-item">
       <span style="font-size:24px;font-weight:bold;">💴 ${t.value}円</span>
-      <div class="admin-actions">
-        <button onclick="deleteTemplate(${t.id})" style="background:#f44336;color:white;border:none;border-radius:8px;cursor:pointer;">削除</button>
+      <div>
+        <button onclick="deleteTemplate(${t.id})" style="font-size:18px;padding:10px 20px;background:#f44336;color:white;border:none;border-radius:8px;cursor:pointer;">削除</button>
       </div>
     </div>`
   ).join('');
@@ -545,7 +602,7 @@ function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 }
 </script>
-<!-- OpenCV.js（一番最後に読み込む） -->
+<!-- OpenCV.js（必ず一番最後に） -->
 <script async src="https://cdn.jsdelivr.net/npm/@techstark/opencv-js/dist/opencv.js" onload="onOpenCvReady()"></script>
 </body>
 </html>
