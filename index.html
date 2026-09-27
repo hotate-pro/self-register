@@ -155,15 +155,15 @@ function gasJsonp(params) {
     const cbName = '_gasCb_' + Date.now() + '_' + Math.random().toString(36).slice(2);
     const script = document.createElement('script');
 
+    let finished = false;
+
     const timer = setTimeout(() => {
       cleanup();
-      reject(new Error('タイムアウト（15秒）しました。通信環境を確認してください。'));
+      reject(new Error(
+        'GAS通信がタイムアウトしました。\\n' +
+        'GASの公開設定が「全員」になっているか確認してください。'
+      ));
     }, 15000);
-
-    window[cbName] = function(data) {
-      cleanup();
-      resolve(data);
-    };
 
     function cleanup() {
       clearTimeout(timer);
@@ -171,12 +171,46 @@ function gasJsonp(params) {
       if (script.parentNode) script.parentNode.removeChild(script);
     }
 
-    const qs = Object.entries(Object.assign({}, params, { callback: cbName }))
+    window[cbName] = function(data) {
+      if (finished) return;
+      finished = true;
+      cleanup();
+
+      if (data && typeof data === 'object' && data.error) {
+        reject(new Error('GASエラー: ' + data.error));
+        return;
+      }
+
+      resolve(data);
+    };
+
+    script.onerror = function() {
+      if (finished) return;
+      finished = true;
+      cleanup();
+      reject(new Error(
+        'GASからJSONPを読み込めませんでした。\\n' +
+        '公開設定・デプロイ先・GASコードを確認してください。'
+      ));
+    };
+
+    script.onload = function() {
+      // GASのContentServiceはリダイレクトされるため、
+      // onloadだけでは成功判定せず、callback実行を待つ。
+    };
+
+    const query = Object.assign({}, params, {
+      // Apps Script公式ドキュメントのJSONP例に合わせて prefix を使用
+      prefix: cbName,
+      callback: cbName,
+      _: Date.now()
+    });
+
+    const qs = Object.entries(query)
       .map(([k, v]) => encodeURIComponent(k) + '=' + encodeURIComponent(v))
       .join('&');
 
     script.src = SCRIPT_URL + '?' + qs;
-    script.onerror = () => { cleanup(); reject(new Error('スクリプト読み込みエラー')); };
     document.body.appendChild(script);
   });
 }
@@ -224,13 +258,22 @@ function saveTemplatesToStorage() {
 function loadProducts() {
   gasJsonp({ api: 'getSelfProducts' })
     .then(ps => {
-      products = Array.isArray(ps) ? ps : [];
+      if (!Array.isArray(ps)) {
+        throw new Error('商品データが正しい形式で返ってきませんでした。');
+      }
+
+      products = ps;
       document.getElementById('loading').style.display = 'none';
       renderProducts();
     })
     .catch(e => {
       document.getElementById('loadingText').innerHTML =
-        '❌ よみこみ失敗<br><span style="font-size:18px;">' + escapeHtml(e.message) + '</span>';
+        '❌ よみこみ失敗<br>' +
+        '<span style="font-size:18px;white-space:pre-line;">' +
+        escapeHtml(e.message) +
+        '</span>';
+      console.error('GAS API error:', e);
+      console.error('SCRIPT_URL:', SCRIPT_URL);
     });
 }
 
