@@ -1,4 +1,4 @@
-name: Vendor OpenCV.js
+name: Vendor OpenCV.js (external WASM)
 
 on:
   push:
@@ -17,35 +17,80 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Download OpenCV.js
+      - name: Download OpenCV.js 4.13.0
         run: |
-          set -e
+          set -euo pipefail
+
           curl -L --fail --silent --show-error \
             https://docs.opencv.org/4.13.0/opencv.js \
             -o opencv.js
 
           test -s opencv.js
 
-          SIZE=$(wc -c < opencv.js)
-          echo "opencv.js size: $SIZE bytes"
+      - name: Externalize embedded WASM
+        run: |
+          set -euo pipefail
 
-          if [ "$SIZE" -lt 5000000 ]; then
-            echo "Downloaded file is unexpectedly small."
-            exit 1
-          fi
+          python3 - <<'PY'
+          from pathlib import Path
+          import base64
+          import re
 
-      - name: Commit OpenCV.js
+          path = Path("opencv.js")
+          text = path.read_text(encoding="utf-8")
+
+          pattern = re.compile(
+              r'var wasmBinaryFile="data:application/octet-stream;base64,([A-Za-z0-9+/=]+)";'
+          )
+          match = pattern.search(text)
+
+          if not match:
+              raise SystemExit(
+                  "OpenCV.js does not contain the expected embedded WASM data URI."
+              )
+
+          wasm_b64 = match.group(1)
+          wasm = base64.b64decode(wasm_b64, validate=True)
+
+          if wasm[:4] != b"\x00asm":
+              raise SystemExit("Extracted file is not a valid WebAssembly binary.")
+
+          Path("opencv.wasm").write_bytes(wasm)
+
+          replaced = (
+              text[:match.start()]
+              + 'var wasmBinaryFile="opencv.wasm";'
+              + text[match.end():]
+          )
+          path.write_text(replaced, encoding="utf-8")
+
+          print(f"opencv.js: {path.stat().st_size} bytes")
+          print(f"opencv.wasm: {len(wasm)} bytes")
+          PY
+
+          grep -q 'var wasmBinaryFile="opencv.wasm";' opencv.js
+          ! grep -q 'data:application/octet-stream;base64,' opencv.js
+          test -s opencv.wasm
+
+      - name: Show artifact sizes
         run: |
           set -e
+          ls -lh opencv.js opencv.wasm
+          file opencv.wasm
 
-          if git diff --quiet -- opencv.js && git ls-files --error-unmatch opencv.js >/dev/null 2>&1; then
-            echo "opencv.js is already up to date."
-            exit 0
-          fi
+      - name: Commit vendored OpenCV
+        run: |
+          set -euo pipefail
 
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-          git add opencv.js
-          git commit -m "Vendor OpenCV.js [skip ci]" || exit 0
+          git add opencv.js opencv.wasm
+
+          if git diff --cached --quiet; then
+            echo "OpenCV.js/WASM are already up to date."
+            exit 0
+          fi
+
+          git commit -m "Vendor OpenCV.js with external WASM [skip ci]"
           git push
