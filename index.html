@@ -272,130 +272,6 @@ let openCvInitError = null;
 let openCvLoadStartedAt = 0;
 let openCvScriptLoading = false;
 
-// OpenCVのバイナリが変わったらこのキーを更新する。
-// IndexedDBに保存した「コンパイル済みWebAssembly.Module」を安全に無効化できる。
-const OPENCV_MODULE_CACHE_KEY = 'opencv-4.13.0-core-imgproc-minbind-o3-v4';
-const OPENCV_IDB_NAME = 'self-register-opencv-cache';
-const OPENCV_IDB_STORE = 'wasm-modules';
-
-function openCvIdb() {
-  return new Promise((resolve, reject) => {
-    if (!('indexedDB' in window)) {
-      reject(new Error('IndexedDBが利用できません。'));
-      return;
-    }
-
-    const req = indexedDB.open(OPENCV_IDB_NAME, 1);
-
-    req.onupgradeneeded = function() {
-      req.result.createObjectStore(OPENCV_IDB_STORE);
-    };
-
-    req.onsuccess = function() {
-      resolve(req.result);
-    };
-
-    req.onerror = function() {
-      reject(req.error || new Error('IndexedDBを開けませんでした。'));
-    };
-  });
-}
-
-async function getCachedOpenCvModule() {
-  const db = await openCvIdb();
-
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(OPENCV_IDB_STORE, 'readonly');
-    const req = tx.objectStore(OPENCV_IDB_STORE).get(OPENCV_MODULE_CACHE_KEY);
-
-    req.onsuccess = function() {
-      db.close();
-      resolve(req.result || null);
-    };
-
-    req.onerror = function() {
-      db.close();
-      reject(req.error || new Error('OpenCV Moduleのキャッシュ取得に失敗しました。'));
-    };
-  });
-}
-
-async function putCachedOpenCvModule(module) {
-  const db = await openCvIdb();
-
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(OPENCV_IDB_STORE, 'readwrite');
-    tx.objectStore(OPENCV_IDB_STORE).put(module, OPENCV_MODULE_CACHE_KEY);
-
-    tx.oncomplete = function() {
-      db.close();
-      resolve();
-    };
-
-    tx.onerror = function() {
-      db.close();
-      reject(tx.error || new Error('OpenCV Moduleのキャッシュ保存に失敗しました。'));
-    };
-
-    tx.onabort = function() {
-      db.close();
-      reject(tx.error || new Error('OpenCV Moduleのキャッシュ保存が中断されました。'));
-    };
-  });
-}
-
-async function compileOpenCvModule() {
-  const wasmUrl = new URL('./opencv.wasm', document.baseURI).href;
-
-  try {
-    return await WebAssembly.compileStreaming(
-      fetch(wasmUrl, {
-        credentials: 'same-origin',
-        cache: 'force-cache'
-      })
-    );
-  } catch (streamingError) {
-    console.warn('OpenCV compileStreaming fallback:', streamingError);
-
-    const response = await fetch(wasmUrl, {
-      credentials: 'same-origin',
-      cache: 'force-cache'
-    });
-
-    if (!response.ok) {
-      throw new Error('opencv.wasmを取得できませんでした: HTTP ' + response.status);
-    }
-
-    return WebAssembly.compile(await response.arrayBuffer());
-  }
-}
-
-async function instantiateOpenCvWithCache(info, receiveInstance) {
-  try {
-    const cachedModule = await getCachedOpenCvModule();
-
-    if (cachedModule instanceof WebAssembly.Module) {
-      const instance = await WebAssembly.instantiate(cachedModule, info);
-      receiveInstance(instance);
-      console.log('OpenCV WASM: compiled Module cache HIT');
-      return;
-    }
-  } catch (cacheError) {
-    console.warn('OpenCV Module cache read failed; rebuilding:', cacheError);
-  }
-
-  const module = await compileOpenCvModule();
-  const instance = await WebAssembly.instantiate(module, info);
-  receiveInstance(instance);
-
-  try {
-    await putCachedOpenCvModule(module);
-    console.log('OpenCV WASM: compiled Module cache SAVED');
-  } catch (cacheError) {
-    console.warn('OpenCV Module cache save failed:', cacheError);
-  }
-}
-
 function startOpenCvLoad() {
   if (openCvReady) return Promise.resolve(window.cv);
   if (openCvReadyPromise) return openCvReadyPromise;
@@ -408,42 +284,16 @@ function startOpenCvLoad() {
     rejectOpenCvReady = reject;
   });
 
+  // Emscripten標準ローダーを使う。
+  // 外部WASMは./opencv.wasmから取得され、対応環境ではinstantiateStreamingが使われる。
   window.Module = {
     locateFile: function(path) {
       return new URL(path, new URL('./opencv.js', document.baseURI)).href;
     },
-
-    instantiateWasm: function(info, receiveInstance) {
-      instantiateOpenCvWithCache(info, receiveInstance)
-        .catch(function(error) {
-          console.error('Cached OpenCV WASM initialization failed; using binary fallback:', error);
-
-          const wasmUrl = new URL('./opencv.wasm', document.baseURI).href;
-
-          fetch(wasmUrl, {
-            credentials: 'same-origin',
-            cache: 'force-cache'
-          })
-            .then(r => {
-              if (!r.ok) throw new Error('opencv.wasm HTTP ' + r.status);
-              return r.arrayBuffer();
-            })
-            .then(buffer => WebAssembly.instantiate(buffer, info))
-            .then(result => receiveInstance(result.instance))
-            .catch(fallbackError => {
-              openCvScriptLoading = false;
-              failOpenCvReady(fallbackError);
-            });
-        });
-
-      return {};
-    },
-
     onRuntimeInitialized: function() {
       openCvScriptLoading = false;
       onOpenCvReady();
     },
-
     onAbort: function(reason) {
       openCvScriptLoading = false;
       failOpenCvReady(reason);
@@ -453,6 +303,10 @@ function startOpenCvLoad() {
   const script = document.createElement('script');
   script.async = true;
   script.src = './opencv.js';
+  script.onload = function() {
+    // script.onloadは「JS読込完了」だけ。
+    // 実際のReady判定はonRuntimeInitializedで行う。
+  };
   script.onerror = function() {
     openCvScriptLoading = false;
     failOpenCvReady('opencv.jsの読み込みに失敗しました。');
@@ -462,6 +316,92 @@ function startOpenCvLoad() {
   return openCvReadyPromise;
 }
 
+function finishOpenCvReady() {
+  if (openCvReady) return true;
+
+  if (
+    typeof window.cv === 'undefined' ||
+    !window.cv ||
+    !window.cv.Mat ||
+    !window.cv.imread ||
+    !window.cv.cvtColor
+  ) {
+    return false;
+  }
+
+  openCvReady = true;
+  const elapsed = Math.round(performance.now() - openCvLoadStartedAt);
+
+  console.log('OpenCV.js ready:', elapsed + ' ms');
+
+  if (resolveOpenCvReady) {
+    resolveOpenCvReady(window.cv);
+    resolveOpenCvReady = null;
+    rejectOpenCvReady = null;
+  }
+
+  const status = document.getElementById('adminCaptureStatus');
+
+  if (status && adminCameraReady && !adminBackgroundReady) {
+    status.textContent =
+      'カメラと画像処理エンジンの準備が完了しました。①を押してください。';
+  }
+
+  const bgBtn = document.getElementById('btnAdminBackground');
+
+  if (bgBtn && adminCameraReady && !adminBackgroundReady) {
+    bgBtn.disabled = false;
+    bgBtn.textContent = '① つくえ（背景）を記憶する';
+  }
+
+  return true;
+}
+
+function failOpenCvReady(reason) {
+  if (openCvReady || openCvInitError) return;
+
+  openCvInitError = new Error(
+    '画像処理エンジン（OpenCV/WASM）を起動できませんでした。' +
+    (reason ? '\\n' + reason : '')
+  );
+
+  console.error('OpenCV initialization failed:', reason);
+
+  if (rejectOpenCvReady) {
+    rejectOpenCvReady(openCvInitError);
+    resolveOpenCvReady = null;
+    rejectOpenCvReady = null;
+  }
+}
+
+function onOpenCvReady() {
+  return finishOpenCvReady()
+    ? Promise.resolve(window.cv)
+    : openCvReadyPromise;
+}
+
+function ensureOpenCvReady(timeoutMs = 30000) {
+  if (openCvReady) return Promise.resolve(window.cv);
+  if (openCvInitError) return Promise.reject(openCvInitError);
+
+  const loadPromise = startOpenCvLoad();
+
+  return Promise.race([
+    loadPromise,
+    new Promise((_, reject) => {
+      setTimeout(() => {
+        if (openCvReady || openCvInitError) return;
+        reject(
+          new Error(
+            'OpenCV/WASMの初期化が' +
+            Math.round(timeoutMs / 1000) +
+            '秒以内に完了しませんでした。'
+          )
+        );
+      }, timeoutMs);
+    })
+  ]);
+}
 // ========================================
 // テンプレート（通貨）のローカル保存
 // ========================================
