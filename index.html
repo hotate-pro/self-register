@@ -241,6 +241,7 @@ function gasJsonp(params) {
 // グローバル変数
 // ========================================
 let products = [];
+let productsLoading = true;
 let cart = {};
 let changeTargetAmount = 0;
 let changeCurrentAmount = 0;
@@ -255,6 +256,7 @@ let adminCameraReady = false;
 let capturedHist = null;
 let capturedArea = 0;
 const STORAGE_KEY = 'self_checkout_templates_v1';
+const PRODUCTS_CACHE_KEY = 'self_checkout_products_cache_v1';
 
 // ========================================
 // OpenCV 準備完了
@@ -411,7 +413,36 @@ function saveTemplatesToStorage() {
 // ========================================
 // 商品データをGASから取得（JSONP）
 // ========================================
+function loadCachedProducts() {
+  try {
+    const cached = JSON.parse(
+      localStorage.getItem(PRODUCTS_CACHE_KEY) || 'null'
+    );
+
+    if (Array.isArray(cached)) {
+      products = cached;
+      if (products.length) {
+        renderProducts();
+        return true;
+      }
+    }
+  } catch (e) {
+    console.warn('商品キャッシュの読み込みに失敗しました:', e);
+  }
+
+  return false;
+}
+
+function saveProductsCache() {
+  try {
+    localStorage.setItem(PRODUCTS_CACHE_KEY, JSON.stringify(products));
+  } catch (e) {
+    console.warn('商品キャッシュの保存に失敗しました:', e);
+  }
+}
+
 function loadProducts() {
+  // GASは裏で更新する。ここでは画面を絶対にブロックしない。
   gasJsonp({ api: 'getSelfProducts' })
     .then(ps => {
       if (!Array.isArray(ps)) {
@@ -419,15 +450,33 @@ function loadProducts() {
       }
 
       products = ps;
+      productsLoading = false;
+      saveProductsCache();
       document.getElementById('loading').style.display = 'none';
       renderProducts();
     })
     .catch(e => {
-      document.getElementById('loadingText').innerHTML =
-        '❌ よみこみ失敗<br>' +
-        '<span style="font-size:18px;white-space:pre-line;">' +
+      productsLoading = false;
+
+      // すでにキャッシュがあれば、それを使ったまま営業可能。
+      if (products.length) {
+        renderProducts();
+        document.getElementById('loading').style.display = 'none';
+        console.warn('GASの商品更新に失敗しました。キャッシュを使用します:', e);
+        return;
+      }
+
+      document.getElementById('loading').style.display = 'none';
+      renderProducts();
+
+      const el = document.getElementById('productsList');
+      el.innerHTML =
+        '<div style="color:#D32F2F;font-size:20px;text-align:center;padding:20px;">' +
+        '商品データを読み込めませんでした。<br>' +
+        '<span style="font-size:16px;">' +
         escapeHtml(e.message) +
-        '</span>';
+        '</span></div>';
+
       console.error('GAS API error:', e);
       console.error('SCRIPT_URL:', SCRIPT_URL);
     });
@@ -450,7 +499,9 @@ function renderProducts() {
   const el = document.getElementById('productsList');
   el.innerHTML = '';
   if (!products.length) {
-    el.innerHTML = '<div style="color:#888;font-size:20px;text-align:center;padding:20px;">スプレッドシートに商品を登録してください</div>';
+    el.innerHTML = productsLoading
+      ? '<div style="color:#888;font-size:20px;text-align:center;padding:20px;">しょうひんを よみこみ中...</div>'
+      : '<div style="color:#888;font-size:20px;text-align:center;padding:20px;">スプレッドシートに商品を登録してください</div>';
   }
   products.forEach(p => {
     const b = document.createElement('div');
@@ -1122,8 +1173,11 @@ function escapeHtml(s) {
 </script>
 <!-- OpenCV.js / external WASM は会計・管理画面を開いた時だけ動的ロードします。 -->
 <script>
-  // OpenCVは裏で起動。商品データは従来どおり即座に取得開始。
+  // 画面は即表示。商品はキャッシュを先に表示し、GASは裏で更新する。
   loadTemplates();
+  const hadCachedProducts = loadCachedProducts();
+  document.getElementById('loading').style.display = 'none';
+  if (!hadCachedProducts) renderProducts();
   loadProducts();
 </script>
 </body>
