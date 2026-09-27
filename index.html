@@ -257,93 +257,15 @@ let capturedArea = 0;
 const STORAGE_KEY = 'self_checkout_templates_v1';
 
 // ========================================
-// OpenCV 準備完了
+// 軽量画像処理エンジン
+// OpenCV.jsを使わず、Canvas/ImageDataだけで動作します。
+// 学校PCでも11MB級のWASMをダウンロード・コンパイルしません。
 // ========================================
-let openCvReady = false;
-let openCvReadyPromise = null;
-let resolveOpenCvReady = null;
-let rejectOpenCvReady = null;
-
-openCvReadyPromise = new Promise((resolve, reject) => {
-  resolveOpenCvReady = resolve;
-  rejectOpenCvReady = reject;
-});
-
-function finishOpenCvReady() {
-  if (openCvReady) return;
-
-  if (
-    typeof window.cv === 'undefined' ||
-    !window.cv ||
-    !window.cv.Mat ||
-    !window.cv.imread ||
-    !window.cv.cvtColor
-  ) {
-    return;
-  }
-
-  openCvReady = true;
-  console.log('OpenCV.js ready');
-
-  if (resolveOpenCvReady) {
-    resolveOpenCvReady(window.cv);
-  }
-
-  const status = document.getElementById('adminCaptureStatus');
-
-  if (status && adminCameraReady && !adminBackgroundReady) {
-    status.textContent =
-      'カメラと画像処理エンジンの準備が完了しました。①を押してください。';
-  }
-
-  const bgBtn = document.getElementById('btnAdminBackground');
-
-  if (bgBtn && adminCameraReady && !adminBackgroundReady) {
-    bgBtn.disabled = false;
-    bgBtn.textContent = '① つくえ（背景）を記憶する';
-  }
-}
-
-function onOpenCvReady() {
-  // scriptタグのload時点では、WASMランタイムが
-  // まだ初期化されていない場合がある。
-  finishOpenCvReady();
-
-  // onRuntimeInitializedが来るのを待つ
-  if (!openCvReady) {
-    let retry = 0;
-
-    const timer = setInterval(() => {
-      finishOpenCvReady();
-      retry++;
-
-      if (openCvReady || retry >= 150) {
-        clearInterval(timer);
-      }
-    }, 100);
-  }
-
-  return openCvReadyPromise;
-}
+let openCvReady = true;
+let openCvReadyPromise = Promise.resolve(null);
 
 function ensureOpenCvReady() {
-  if (openCvReady) {
-    return Promise.resolve(window.cv);
-  }
-
-  return Promise.race([
-    openCvReadyPromise,
-
-    new Promise((_, reject) => {
-      setTimeout(() => {
-        reject(
-          new Error(
-            'OpenCV.jsの初期化が15秒以内に終わりませんでした。'
-          )
-        );
-      }, 15000);
-    })
-  ]);
+  return Promise.resolve(null);
 }
 // ========================================
 // テンプレート（通貨）のローカル保存
@@ -429,7 +351,6 @@ function goToProducts() {
   adminCameraReady = false;
   adminBackgroundReady = false;
   if (bgFrame) {
-    bgFrame.delete();
     bgFrame = null;
   }
   switchView('view-products');
@@ -666,7 +587,7 @@ function startCamera(videoId, canvasId, processFunc) {
 }
 function stopCamera() {
   if (videoStream) { videoStream.getTracks().forEach(t => t.stop()); videoStream = null; }
-  if (bgFrame) { bgFrame.delete(); bgFrame = null; }
+  if (bgFrame) { bgFrame = null; }
 }
 
 // ========================================
@@ -677,15 +598,8 @@ function captureBackground(isCheckout) {
     isCheckout ? 'videoElement' : 'adminVideoElement'
   );
 
-  if (!video) {
-    return false;
-  }
-
-  if (
-    video.readyState < video.HAVE_CURRENT_DATA ||
-    !video.videoWidth ||
-    !video.videoHeight
-  ) {
+  if (!video || !video.videoWidth || !video.videoHeight ||
+      video.readyState < video.HAVE_CURRENT_DATA) {
     if (!isCheckout) {
       document.getElementById('adminBackgroundStatus').textContent =
         '背景：🟡 カメラ映像を待っています...';
@@ -695,69 +609,35 @@ function captureBackground(isCheckout) {
     return false;
   }
 
-  if (!openCvReady || typeof window.cv === 'undefined') {
-    if (!isCheckout) {
-      document.getElementById('adminBackgroundStatus').textContent =
-        '背景：🟡 画像処理エンジン準備中...';
-
-      document.getElementById('adminCaptureStatus').textContent =
-        'まだOpenCV.jsが使える状態ではありません。少し待ってから①を押してください。';
-    }
-    return false;
-  }
-
   try {
+    // 320x240に縮小して背景を保存。処理量を約1/4以下にする。
+    const w = 320;
+    const h = Math.max(180, Math.round(w * video.videoHeight / video.videoWidth));
     const c = document.createElement('canvas');
-    c.width = video.videoWidth;
-    c.height = video.videoHeight;
-
+    c.width = w;
+    c.height = h;
     const ctx = c.getContext('2d', { willReadFrequently: true });
+    ctx.drawImage(video, 0, 0, w, h);
 
-    ctx.drawImage(
-      video,
-      0,
-      0,
-      c.width,
-      c.height
-    );
+    const pixels = ctx.getImageData(0, 0, w, h).data;
+    const gray = new Uint8Array(w * h);
 
-    if (bgFrame) {
-      bgFrame.delete();
-      bgFrame = null;
+    for (let i = 0, p = 0; i < gray.length; i++, p += 4) {
+      gray[i] = Math.round(
+        pixels[p] * 0.299 +
+        pixels[p + 1] * 0.587 +
+        pixels[p + 2] * 0.114
+      );
     }
 
-    const src = cv.imread(c);
-    const newBg = new cv.Mat();
-
-    cv.cvtColor(
-      src,
-      newBg,
-      cv.COLOR_RGBA2GRAY,
-      0
-    );
-
-    cv.GaussianBlur(
-      newBg,
-      newBg,
-      new cv.Size(21, 21),
-      0,
-      0,
-      cv.BORDER_DEFAULT
-    );
-
-    src.delete();
-
-    bgFrame = newBg;
+    bgFrame = { w, h, data: gray };
 
     if (!isCheckout) {
       adminBackgroundReady = true;
 
-      const captureBtn =
-        document.getElementById('btnAdminCapture');
-
+      const captureBtn = document.getElementById('btnAdminCapture');
       captureBtn.disabled = false;
-      captureBtn.textContent =
-        '② 赤枠の中を通貨として登録する';
+      captureBtn.textContent = '② 赤枠の中を通貨として登録する';
 
       document.getElementById('adminBackgroundStatus').textContent =
         '背景：🟢 記憶済み！';
@@ -765,30 +645,19 @@ function captureBackground(isCheckout) {
       document.getElementById('adminCaptureStatus').textContent =
         '赤枠が表示されました。お金を置いて②を押してください。';
 
-      document.getElementById('adminTargetBox').style.display =
-        'block';
-
-      // 成功を画面で確定表示。alertに依存しない。
-      console.log('Admin background captured successfully.');
+      document.getElementById('adminTargetBox').style.display = 'block';
     }
 
     return true;
-
   } catch (err) {
-
     console.error('captureBackground failed:', err);
-
     if (!isCheckout) {
       adminBackgroundReady = false;
-
       document.getElementById('adminBackgroundStatus').textContent =
         '背景：❌ 記憶に失敗しました';
-
       document.getElementById('adminCaptureStatus').textContent =
-        'もう一度①を押してください。エラー: ' +
-        (err.message || err);
+        'もう一度①を押してください。エラー: ' + (err.message || err);
     }
-
     return false;
   }
 }
@@ -797,47 +666,139 @@ function captureBackground(isCheckout) {
 // 画像処理（背景差分 + HSVヒストグラム）
 // ========================================
 function extractFeatures(video, canvas, isCheckOutMode) {
-  const cv = window.cv;
-  const ctx = canvas.getContext('2d');
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
   ctx.clearRect(0, 0, canvas.width, canvas.height);
   if (!bgFrame) return [];
 
+  const w = bgFrame.w;
+  const h = bgFrame.h;
+
   const tmp = document.createElement('canvas');
-  tmp.width = canvas.width; tmp.height = canvas.height;
-  tmp.getContext('2d').drawImage(video, 0, 0, tmp.width, tmp.height);
+  tmp.width = w;
+  tmp.height = h;
+  const tctx = tmp.getContext('2d', { willReadFrequently: true });
+  tctx.drawImage(video, 0, 0, w, h);
 
-  let src = cv.imread(tmp);
-  let gray = new cv.Mat(), blur = new cv.Mat(), diff = new cv.Mat(), thresh = new cv.Mat();
-  let contours = new cv.MatVector(), hierarchy = new cv.Mat();
+  const pix = tctx.getImageData(0, 0, w, h).data;
+  const mask = new Uint8Array(w * h);
+  const bg = bgFrame.data;
 
-  cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY, 0);
-  cv.GaussianBlur(gray, blur, new cv.Size(21, 21), 0, 0, cv.BORDER_DEFAULT);
-  cv.absdiff(bgFrame, blur, diff);
-  cv.threshold(diff, thresh, 30, 255, cv.THRESH_BINARY);
-  let kernel = cv.Mat.ones(5, 5, cv.CV_8U);
-  cv.dilate(thresh, thresh, kernel, new cv.Point(-1, -1), 2);
-  cv.erode(thresh, thresh, kernel, new cv.Point(-1, -1), 2);
-  cv.findContours(thresh, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
+  // 背景との差分。少し余裕を持たせて照明変化に耐える。
+  for (let i = 0, p = 0; i < mask.length; i++, p += 4) {
+    const g = Math.round(
+      pix[p] * 0.299 +
+      pix[p + 1] * 0.587 +
+      pix[p + 2] * 0.114
+    );
+    if (Math.abs(g - bg[i]) > 32) mask[i] = 1;
+  }
 
-  let detected = [];
-  for (let i = 0; i < contours.size(); i++) {
-    let cnt = contours.get(i);
-    let area = cv.contourArea(cnt);
-    if (area > 1500 && area < canvas.width * canvas.height * 0.5) {
-      let rect = cv.boundingRect(cnt);
-      if (!isCheckOutMode) {
-        let cx = rect.x + rect.width / 2, cy = rect.y + rect.height / 2;
-        if (Math.abs(cx - canvas.width / 2) > 100 || Math.abs(cy - canvas.height / 2) > 100) continue;
+  // 簡易ノイズ除去：周囲に差分が少ない点を落とす。
+  const clean = new Uint8Array(mask);
+  for (let y = 1; y < h - 1; y++) {
+    for (let x = 1; x < w - 1; x++) {
+      const i = y * w + x;
+      let n = 0;
+      for (let dy = -1; dy <= 1; dy++) {
+        for (let dx = -1; dx <= 1; dx++) n += mask[(y + dy) * w + x + dx];
       }
-      let roi = src.roi(rect), hsv = new cv.Mat();
-      cv.cvtColor(roi, hsv, cv.COLOR_RGBA2RGB);
-      cv.cvtColor(hsv, hsv, cv.COLOR_RGB2HSV);
-      let ch = new cv.MatVector(); cv.split(hsv, ch);
-      let hH = new cv.Mat(), sH = new cv.Mat(), mask = new cv.Mat();
-      cv.calcHist([ch.get(0)], [0], mask, hH, [180], [0, 180]); cv.normalize(hH, hH, 0, 1, cv.NORM_MINMAX);
-      cv.calcHist([ch.get(1)], [0], mask, sH, [256], [0, 256]); cv.normalize(sH, sH, 0, 1, cv.NORM_MINMAX);
-      detected.push({ rect, area, hArr: Array.from(hH.data32F), sArr: Array.from(sH.data32F) });
-      roi.delete(); hsv.delete(); ch.delete(); hH.delete(); sH.delete(); mask.delete();
+      if (n < 3) clean[i] = 0;
+    }
+  }
+
+  // 連結成分を探索。
+  const seen = new Uint8Array(w * h);
+  const detected = [];
+  const qx = new Int32Array(w * h);
+  const qy = new Int32Array(w * h);
+
+  for (let sy = 0; sy < h; sy++) {
+    for (let sx = 0; sx < w; sx++) {
+      const si = sy * w + sx;
+      if (!clean[si] || seen[si]) continue;
+
+      let head = 0, tail = 0;
+      qx[tail] = sx; qy[tail] = sy; tail++;
+      seen[si] = 1;
+
+      let minX = sx, maxX = sx, minY = sy, maxY = sy, area = 0;
+
+      while (head < tail) {
+        const x = qx[head], y = qy[head]; head++;
+        area++;
+        if (x < minX) minX = x;
+        if (x > maxX) maxX = x;
+        if (y < minY) minY = y;
+        if (y > maxY) maxY = y;
+
+        const ns = [
+          [x - 1, y], [x + 1, y], [x, y - 1], [x, y + 1]
+        ];
+        for (const [nx, ny] of ns) {
+          if (nx < 0 || nx >= w || ny < 0 || ny >= h) continue;
+          const ni = ny * w + nx;
+          if (clean[ni] && !seen[ni]) {
+            seen[ni] = 1;
+            qx[tail] = nx; qy[tail] = ny; tail++;
+          }
+        }
+      }
+
+      const rw = maxX - minX + 1;
+      const rh = maxY - minY + 1;
+      const imageArea = w * h;
+
+      if (area < 700 || area > imageArea * 0.5 ||
+          rw < 25 || rh < 25) continue;
+
+      const cx = (minX + maxX) / 2;
+      const cy = (minY + maxY) / 2;
+      if (!isCheckOutMode &&
+          (Math.abs(cx - w / 2) > 55 || Math.abs(cy - h / 2) > 55)) {
+        continue;
+      }
+
+      // HSVヒストグラムをCanvasから直接作成。
+      const histH = new Float32Array(180);
+      const histS = new Float32Array(256);
+      let samples = 0;
+
+      for (let y = minY; y <= maxY; y += 2) {
+        for (let x = minX; x <= maxX; x += 2) {
+          const p = (y * w + x) * 4;
+          const r = pix[p] / 255, g = pix[p + 1] / 255, b = pix[p + 2] / 255;
+          const mx = Math.max(r,g,b), mn = Math.min(r,g,b);
+          const d = mx - mn;
+          let hh = 0;
+          if (d !== 0) {
+            if (mx === r) hh = 60 * (((g-b)/d) % 6);
+            else if (mx === g) hh = 60 * ((b-r)/d + 2);
+            else hh = 60 * ((r-g)/d + 4);
+            if (hh < 0) hh += 360;
+          }
+          const ss = mx === 0 ? 0 : d / mx;
+          histH[Math.min(179, Math.floor(hh / 2))]++;
+          histS[Math.min(255, Math.floor(ss * 255))]++;
+          samples++;
+        }
+      }
+
+      if (samples) {
+        let maxH = 0, maxS = 0;
+        for (let i = 0; i < 180; i++) if (histH[i] > maxH) maxH = histH[i];
+        for (let i = 0; i < 256; i++) if (histS[i] > maxS) maxS = histS[i];
+        if (maxH) for (let i = 0; i < 180; i++) histH[i] /= maxH;
+        if (maxS) for (let i = 0; i < 256; i++) histS[i] /= maxS;
+      }
+
+      const rect = {
+        x: Math.round(minX / w * canvas.width),
+        y: Math.round(minY / h * canvas.height),
+        width: Math.round(rw / w * canvas.width),
+        height: Math.round(rh / h * canvas.height)
+      };
+
+      detected.push({ rect, area, hArr: Array.from(histH), sArr: Array.from(histS) });
     }
   }
 
@@ -847,8 +808,6 @@ function extractFeatures(video, canvas, isCheckOutMode) {
     ctx.strokeRect(f.rect.x, f.rect.y, f.rect.width, f.rect.height);
   });
 
-  src.delete(); gray.delete(); blur.delete(); diff.delete(); thresh.delete();
-  contours.delete(); hierarchy.delete(); kernel.delete();
   return detected;
 }
 
@@ -856,7 +815,6 @@ function extractFeatures(video, canvas, isCheckOutMode) {
 // 会計カメラのフレーム処理
 // ========================================
 function processCheckoutFrame(video, canvas) {
-  if (!openCvReady || !window.cv) return;
 
   let features = extractFeatures(video, canvas, true);
   let totalDetected = 0;
@@ -910,7 +868,6 @@ function openAdmin() {
   adminCameraReady = false;
 
   if (bgFrame) {
-    bgFrame.delete();
     bgFrame = null;
   }
 
@@ -1068,26 +1025,8 @@ function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 }
 </script>
-<!-- OpenCV.js -->
 <script>
-  // OpenCV.js公式の初期化コールバック。
-  // 必ずopencv.jsの<script>より前に定義する。
-  window.Module = {
-    onRuntimeInitialized: function() {
-      onOpenCvReady();
-    }
-  };
-</script>
-
-<!-- バージョン固定。latestを使わず4.13.0を使用 -->
-<script
-  async
-  src="./opencv.js"
-  onload="onOpenCvReady()"
-></script>
-
-<script>
-  // レジ本体はOpenCVの準備を待たずに開始
+  // 軽量版はOpenCVのダウンロードを一切行わず、即起動します。
   loadTemplates();
   loadProducts();
 </script>
