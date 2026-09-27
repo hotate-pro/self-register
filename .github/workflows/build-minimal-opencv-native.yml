@@ -4,6 +4,9 @@ on:
   push:
     branches:
       - main
+    paths:
+      - '.github/workflows/build-minimal-opencv-native.yml'
+      - 'opencv-minimal-whitelist.json'
   workflow_dispatch:
 
 concurrency:
