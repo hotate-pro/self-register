@@ -261,63 +261,89 @@ const STORAGE_KEY = 'self_checkout_templates_v1';
 // ========================================
 let openCvReady = false;
 let openCvReadyPromise = null;
+let resolveOpenCvReady = null;
+let rejectOpenCvReady = null;
+
+openCvReadyPromise = new Promise((resolve, reject) => {
+  resolveOpenCvReady = resolve;
+  rejectOpenCvReady = reject;
+});
+
+function finishOpenCvReady() {
+  if (openCvReady) return;
+
+  if (
+    typeof window.cv === 'undefined' ||
+    !window.cv ||
+    !window.cv.Mat ||
+    !window.cv.imread ||
+    !window.cv.cvtColor
+  ) {
+    return;
+  }
+
+  openCvReady = true;
+  console.log('OpenCV.js ready');
+
+  if (resolveOpenCvReady) {
+    resolveOpenCvReady(window.cv);
+  }
+
+  const status = document.getElementById('adminCaptureStatus');
+
+  if (status && adminCameraReady && !adminBackgroundReady) {
+    status.textContent =
+      'カメラと画像処理エンジンの準備が完了しました。①を押してください。';
+  }
+
+  const bgBtn = document.getElementById('btnAdminBackground');
+
+  if (bgBtn && adminCameraReady && !adminBackgroundReady) {
+    bgBtn.disabled = false;
+    bgBtn.textContent = '① つくえ（背景）を記憶する';
+  }
+}
 
 function onOpenCvReady() {
-  if (openCvReadyPromise) return openCvReadyPromise;
+  // scriptタグのload時点では、WASMランタイムが
+  // まだ初期化されていない場合がある。
+  finishOpenCvReady();
 
-  openCvReadyPromise = (async () => {
-    try {
-      // OpenCV.jsのロード後、実体が使える状態になるまで待つ。
-      let retry = 0;
+  // onRuntimeInitializedが来るのを待つ
+  if (!openCvReady) {
+    let retry = 0;
 
-      while (typeof window.cv === 'undefined' && retry < 100) {
-        await new Promise(resolve => setTimeout(resolve, 100));
-        retry++;
+    const timer = setInterval(() => {
+      finishOpenCvReady();
+      retry++;
+
+      if (openCvReady || retry >= 150) {
+        clearInterval(timer);
       }
-
-      if (typeof window.cv === 'undefined') {
-        throw new Error('OpenCV.jsが読み込まれていません。');
-      }
-
-      window.cv = await window.cv;
-
-      if (
-        !window.cv ||
-        !window.cv.Mat ||
-        !window.cv.imread ||
-        !window.cv.cvtColor
-      ) {
-        throw new Error('OpenCV.jsの初期化に失敗しました。');
-      }
-
-      openCvReady = true;
-      console.log('OpenCV.js ready');
-
-      // 管理画面を開いている最中なら、状態表示を更新
-      const status = document.getElementById('adminCaptureStatus');
-      if (status && !adminBackgroundReady) {
-        status.textContent =
-          adminCameraReady
-            ? 'カメラは使えます。画像処理エンジンも準備できました。'
-            : 'カメラと画像処理エンジンを準備しています。';
-      }
-
-      return window.cv;
-
-    } catch (err) {
-      console.error('OpenCV initialization failed:', err);
-      throw err;
-    }
-  })();
+    }, 100);
+  }
 
   return openCvReadyPromise;
 }
 
 function ensureOpenCvReady() {
-  if (openCvReady && window.cv) {
+  if (openCvReady) {
     return Promise.resolve(window.cv);
   }
-  return onOpenCvReady();
+
+  return Promise.race([
+    openCvReadyPromise,
+
+    new Promise((_, reject) => {
+      setTimeout(() => {
+        reject(
+          new Error(
+            'OpenCV.jsの初期化が15秒以内に終わりませんでした。'
+          )
+        );
+      }, 15000);
+    })
+  ]);
 }
 // ========================================
 // テンプレート（通貨）のローカル保存
@@ -672,19 +698,10 @@ function captureBackground(isCheckout) {
   if (!openCvReady || typeof window.cv === 'undefined') {
     if (!isCheckout) {
       document.getElementById('adminBackgroundStatus').textContent =
-        '背景：🟡 画像処理エンジンを準備中...';
+        '背景：🟡 画像処理エンジン準備中...';
+
       document.getElementById('adminCaptureStatus').textContent =
-        '画像処理エンジンを準備しています。';
-      ensureOpenCvReady().then(() => {
-        if (adminCameraReady && !adminBackgroundReady) {
-          captureBackground(false);
-        }
-      }).catch(err => {
-        document.getElementById('adminBackgroundStatus').textContent =
-          '背景：❌ 画像処理エンジンの起動に失敗';
-        document.getElementById('adminCaptureStatus').textContent =
-          err.message || String(err);
-      });
+        'まだOpenCV.jsが使える状態ではありません。少し待ってから①を押してください。';
     }
     return false;
   }
@@ -897,8 +914,11 @@ function openAdmin() {
     bgFrame = null;
   }
 
-  const bgBtn = document.getElementById('btnAdminBackground');
-  const captureBtn = document.getElementById('btnAdminCapture');
+  const bgBtn =
+    document.getElementById('btnAdminBackground');
+
+  const captureBtn =
+    document.getElementById('btnAdminCapture');
 
   bgBtn.disabled = true;
   bgBtn.textContent = '① カメラ準備中...';
@@ -911,9 +931,10 @@ function openAdmin() {
     '背景：🟡 カメラ準備中...';
 
   document.getElementById('adminCaptureStatus').textContent =
-    'カメラを準備しています。';
+    'カメラを起動しています。';
 
-  document.getElementById('adminTargetBox').style.display = 'none';
+  document.getElementById('adminTargetBox').style.display =
+    'none';
 
   startCamera(
     'adminVideoElement',
@@ -927,42 +948,54 @@ function openAdmin() {
   .then(() => {
     adminCameraReady = true;
 
-    bgBtn.disabled = false;
-    bgBtn.textContent =
-      openCvReady
-        ? '① つくえ（背景）を記憶する'
-        : '① 画像処理エンジン準備中...';
+    if (openCvReady) {
+      bgBtn.disabled = false;
+      bgBtn.textContent =
+        '① つくえ（背景）を記憶する';
 
-    document.getElementById('adminBackgroundStatus').textContent =
-      '背景：🔴 まだ記憶していません';
+      document.getElementById('adminBackgroundStatus').textContent =
+        '背景：🔴 まだ記憶していません';
 
-    document.getElementById('adminCaptureStatus').textContent =
-      openCvReady
-        ? '机の上にお金を置かず、①を押してください。'
-        : 'カメラは準備できました。画像処理エンジンを準備しています。';
+      document.getElementById('adminCaptureStatus').textContent =
+        '机の上にお金を置かず、①を押してください。';
 
-    // OpenCVが後から準備できたら①を有効化
-    ensureOpenCvReady()
-      .then(() => {
-        if (!adminCameraReady || adminBackgroundReady) return;
+    } else {
+      bgBtn.disabled = true;
+      bgBtn.textContent =
+        '① 画像処理エンジン準備中...';
 
-        bgBtn.disabled = false;
-        bgBtn.textContent =
-          '① つくえ（背景）を記憶する';
+      document.getElementById('adminBackgroundStatus').textContent =
+        '背景：🟡 画像処理エンジン準備中...';
 
-        document.getElementById('adminCaptureStatus').textContent =
-          '机の上にお金を置かず、①を押してください。';
-      })
-      .catch(err => {
-        bgBtn.disabled = true;
-        bgBtn.textContent =
-          '① 画像処理エンジン起動失敗';
+      document.getElementById('adminCaptureStatus').textContent =
+        'カメラは準備完了。画像処理エンジンを待っています...';
 
-        document.getElementById('adminCaptureStatus').textContent =
-          'OpenCV.jsの起動に失敗しました: ' +
-          (err.message || String(err));
-      });
+      ensureOpenCvReady()
+        .then(() => {
+          if (!adminCameraReady || adminBackgroundReady) return;
 
+          bgBtn.disabled = false;
+          bgBtn.textContent =
+            '① つくえ（背景）を記憶する';
+
+          document.getElementById('adminBackgroundStatus').textContent =
+            '背景：🔴 まだ記憶していません';
+
+          document.getElementById('adminCaptureStatus').textContent =
+            '机の上にお金を置かず、①を押してください。';
+        })
+        .catch(err => {
+          bgBtn.disabled = true;
+          bgBtn.textContent =
+            '① OpenCV起動失敗';
+
+          document.getElementById('adminBackgroundStatus').textContent =
+            '背景：❌ 画像処理エンジンを起動できませんでした';
+
+          document.getElementById('adminCaptureStatus').textContent =
+            err.message;
+        });
+    }
   })
   .catch(err => {
     adminCameraReady = false;
@@ -971,8 +1004,7 @@ function openAdmin() {
       '背景：❌ カメラを起動できませんでした';
 
     document.getElementById('adminCaptureStatus').textContent =
-      'カメラ許可を確認してください: ' +
-      (err.message || String(err));
+      err.message || String(err);
   });
 }
 
@@ -1036,15 +1068,26 @@ function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 }
 </script>
-<!-- OpenCV.jsは裏で読み込みます。レジ本体は先に起動します。 -->
+<!-- OpenCV.js -->
+<script>
+  // OpenCV.js公式の初期化コールバック。
+  // 必ずopencv.jsの<script>より前に定義する。
+  window.Module = {
+    onRuntimeInitialized: function() {
+      onOpenCvReady();
+    }
+  };
+</script>
+
+<!-- バージョン固定。latestを使わず4.13.0を使用 -->
 <script
   async
-  src="https://cdn.jsdelivr.net/npm/@techstark/opencv-js/dist/opencv.js"
+  src="https://docs.opencv.org/4.13.0/opencv.js"
   onload="onOpenCvReady()"
 ></script>
 
 <script>
-  // 初期表示はOpenCVの準備を待たずに開始
+  // レジ本体はOpenCVの準備を待たずに開始
   loadTemplates();
   loadProducts();
 </script>
