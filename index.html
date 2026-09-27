@@ -1078,67 +1078,63 @@ function openAdmin() {
     bgFrame = null;
   }
 
-  const bgBtn =
-    document.getElementById('btnAdminBackground');
-
-  const captureBtn =
-    document.getElementById('btnAdminCapture');
+  const bgBtn = document.getElementById('btnAdminBackground');
+  const captureBtn = document.getElementById('btnAdminCapture');
 
   bgBtn.disabled = true;
   bgBtn.textContent = '① カメラ準備中...';
 
   captureBtn.disabled = true;
-  captureBtn.textContent =
-    '② まず①で背景を記憶してください';
+  captureBtn.textContent = '② まず①で背景を記憶してください';
 
   document.getElementById('adminBackgroundStatus').textContent =
     '背景：🟡 カメラ準備中...';
 
   document.getElementById('adminCaptureStatus').textContent =
-    'カメラを起動しています。';
+    'カメラと画像処理エンジンを準備しています。';
 
-  document.getElementById('adminTargetBox').style.display =
-    'none';
+  document.getElementById('adminTargetBox').style.display = 'none';
 
-  // OpenCVとカメラを同時に起動して待ち時間を重ねる。
+  // カメラとOpenCVを完全に並列起動。
   const openCvPromise = ensureOpenCvReady();
 
-  startCamera(
+  const cameraPromise = startCamera(
     'adminVideoElement',
     'adminOverlayCanvas',
     (v, c) => {
-      bgBtn.disabled = false;
-    bgBtn.textContent =
-      '① つくえ（背景）を記憶する';
-
-    document.getElementById('adminBackgroundStatus').textContent =
-      '背景：🔴 まだ記憶していません';
-
-    document.getElementById('adminCaptureStatus').textContent =
-      '机の上にお金を置かず、①を押してください。';
-
-  .catch(err => {
-          bgBtn.disabled = true;
-          bgBtn.textContent =
-            '① OpenCV起動失敗';
-
-          document.getElementById('adminBackgroundStatus').textContent =
-            '背景：❌ 画像処理エンジンを起動できませんでした';
-
-          document.getElementById('adminCaptureStatus').textContent =
-            err.message;
-        });
+      if (openCvReady) {
+        extractFeatures(v, c, false);
+      }
     }
-  })
-  .catch(err => {
-    adminCameraReady = false;
+  );
 
-    document.getElementById('adminBackgroundStatus').textContent =
-      '背景：❌ カメラを起動できませんでした';
+  Promise.all([openCvPromise, cameraPromise])
+    .then(() => {
+      adminCameraReady = true;
 
-    document.getElementById('adminCaptureStatus').textContent =
-      err.message || String(err);
-  });
+      bgBtn.disabled = false;
+      bgBtn.textContent = '① つくえ（背景）を記憶する';
+
+      document.getElementById('adminBackgroundStatus').textContent =
+        '背景：🔴 まだ記憶していません';
+
+      document.getElementById('adminCaptureStatus').textContent =
+        '机の上にお金を置かず、①を押してください。';
+    })
+    .catch(err => {
+      adminCameraReady = false;
+
+      bgBtn.disabled = true;
+      bgBtn.textContent = '① OpenCV/カメラの準備に失敗';
+
+      document.getElementById('adminBackgroundStatus').textContent =
+        '背景：❌ 準備に失敗しました';
+
+      document.getElementById('adminCaptureStatus').textContent =
+        err.message || String(err);
+
+      console.error('Admin startup failed:', err);
+    });
 }
 
 function captureTemplate() {
