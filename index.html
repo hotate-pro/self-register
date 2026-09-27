@@ -1173,12 +1173,28 @@ function escapeHtml(s) {
 </script>
 <!-- OpenCV.js / external WASM は会計・管理画面を開いた時だけ動的ロードします。 -->
 <script>
-  // 画面は即表示。商品はキャッシュを先に表示し、GASは裏で更新する。
+  // 初期描画をGAS通信から完全に分離する。
+  // JSONPはload後に開始するため、ブラウザのページ読み込み完了を待たせない。
   loadTemplates();
+
   const hadCachedProducts = loadCachedProducts();
+
   document.getElementById('loading').style.display = 'none';
-  if (!hadCachedProducts) renderProducts();
-  loadProducts();
+
+  if (!hadCachedProducts) {
+    renderProducts();
+  }
+
+  window.addEventListener('load', () => {
+    const start = () => loadProducts();
+
+    // 描画を先に完了させてからGASへ。
+    if ('requestIdleCallback' in window) {
+      requestIdleCallback(start, { timeout: 2000 });
+    } else {
+      setTimeout(start, 50);
+    }
+  }, { once: true });
 </script>
 </body>
 </html>
