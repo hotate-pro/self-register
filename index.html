@@ -272,6 +272,130 @@ let openCvInitError = null;
 let openCvLoadStartedAt = 0;
 let openCvScriptLoading = false;
 
+// OpenCVのバイナリが変わったらこのキーを更新する。
+// IndexedDBに保存した「コンパイル済みWebAssembly.Module」を安全に無効化できる。
+const OPENCV_MODULE_CACHE_KEY = 'opencv-4.13.0-core-imgproc-o3-v2';
+const OPENCV_IDB_NAME = 'self-register-opencv-cache';
+const OPENCV_IDB_STORE = 'wasm-modules';
+
+function openCvIdb() {
+  return new Promise((resolve, reject) => {
+    if (!('indexedDB' in window)) {
+      reject(new Error('IndexedDBが利用できません。'));
+      return;
+    }
+
+    const req = indexedDB.open(OPENCV_IDB_NAME, 1);
+
+    req.onupgradeneeded = function() {
+      req.result.createObjectStore(OPENCV_IDB_STORE);
+    };
+
+    req.onsuccess = function() {
+      resolve(req.result);
+    };
+
+    req.onerror = function() {
+      reject(req.error || new Error('IndexedDBを開けませんでした。'));
+    };
+  });
+}
+
+async function getCachedOpenCvModule() {
+  const db = await openCvIdb();
+
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(OPENCV_IDB_STORE, 'readonly');
+    const req = tx.objectStore(OPENCV_IDB_STORE).get(OPENCV_MODULE_CACHE_KEY);
+
+    req.onsuccess = function() {
+      db.close();
+      resolve(req.result || null);
+    };
+
+    req.onerror = function() {
+      db.close();
+      reject(req.error || new Error('OpenCV Moduleのキャッシュ取得に失敗しました。'));
+    };
+  });
+}
+
+async function putCachedOpenCvModule(module) {
+  const db = await openCvIdb();
+
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(OPENCV_IDB_STORE, 'readwrite');
+    tx.objectStore(OPENCV_IDB_STORE).put(module, OPENCV_MODULE_CACHE_KEY);
+
+    tx.oncomplete = function() {
+      db.close();
+      resolve();
+    };
+
+    tx.onerror = function() {
+      db.close();
+      reject(tx.error || new Error('OpenCV Moduleのキャッシュ保存に失敗しました。'));
+    };
+
+    tx.onabort = function() {
+      db.close();
+      reject(tx.error || new Error('OpenCV Moduleのキャッシュ保存が中断されました。'));
+    };
+  });
+}
+
+async function compileOpenCvModule() {
+  const wasmUrl = new URL('./opencv.wasm', document.baseURI).href;
+
+  try {
+    return await WebAssembly.compileStreaming(
+      fetch(wasmUrl, {
+        credentials: 'same-origin',
+        cache: 'force-cache'
+      })
+    );
+  } catch (streamingError) {
+    console.warn('OpenCV compileStreaming fallback:', streamingError);
+
+    const response = await fetch(wasmUrl, {
+      credentials: 'same-origin',
+      cache: 'force-cache'
+    });
+
+    if (!response.ok) {
+      throw new Error('opencv.wasmを取得できませんでした: HTTP ' + response.status);
+    }
+
+    return WebAssembly.compile(await response.arrayBuffer());
+  }
+}
+
+async function instantiateOpenCvWithCache(info, receiveInstance) {
+  try {
+    const cachedModule = await getCachedOpenCvModule();
+
+    if (cachedModule instanceof WebAssembly.Module) {
+      const instance = await WebAssembly.instantiate(cachedModule, info);
+      receiveInstance(instance);
+      console.log('OpenCV WASM: compiled Module cache HIT');
+      return;
+    }
+  } catch (cacheError) {
+    console.warn('OpenCV Module cache read failed; rebuilding:', cacheError);
+  }
+
+  const module = await compileOpenCvModule();
+  const instance = await WebAssembly.instantiate(module, info);
+  receiveInstance(instance);
+
+  try {
+    await putCachedOpenCvModule(module);
+    console.log('OpenCV WASM: compiled Module cache SAVED');
+  } catch (cacheError) {
+    console.warn('OpenCV Module cache save failed:', cacheError);
+  }
+}
+
 function startOpenCvLoad() {
   if (openCvReady) return Promise.resolve(window.cv);
   if (openCvReadyPromise) return openCvReadyPromise;
@@ -284,16 +408,42 @@ function startOpenCvLoad() {
     rejectOpenCvReady = reject;
   });
 
-  // OpenCVを必要になった瞬間だけロードする。
-  // これで通常のレジ画面のリロードはWASMダウンロードに巻き込まれない。
   window.Module = {
     locateFile: function(path) {
       return new URL(path, new URL('./opencv.js', document.baseURI)).href;
     },
+
+    instantiateWasm: function(info, receiveInstance) {
+      instantiateOpenCvWithCache(info, receiveInstance)
+        .catch(function(error) {
+          console.error('Cached OpenCV WASM initialization failed; using binary fallback:', error);
+
+          const wasmUrl = new URL('./opencv.wasm', document.baseURI).href;
+
+          fetch(wasmUrl, {
+            credentials: 'same-origin',
+            cache: 'force-cache'
+          })
+            .then(r => {
+              if (!r.ok) throw new Error('opencv.wasm HTTP ' + r.status);
+              return r.arrayBuffer();
+            })
+            .then(buffer => WebAssembly.instantiate(buffer, info))
+            .then(result => receiveInstance(result.instance))
+            .catch(fallbackError => {
+              openCvScriptLoading = false;
+              failOpenCvReady(fallbackError);
+            });
+        });
+
+      return {};
+    },
+
     onRuntimeInitialized: function() {
       openCvScriptLoading = false;
       onOpenCvReady();
     },
+
     onAbort: function(reason) {
       openCvScriptLoading = false;
       failOpenCvReady(reason);
@@ -312,93 +462,6 @@ function startOpenCvLoad() {
   return openCvReadyPromise;
 }
 
-function finishOpenCvReady() {
-  if (openCvReady) return true;
-
-  if (
-    typeof window.cv === 'undefined' ||
-    !window.cv ||
-    !window.cv.Mat ||
-    !window.cv.imread ||
-    !window.cv.cvtColor
-  ) {
-    return false;
-  }
-
-  openCvReady = true;
-  const elapsed = Math.round(performance.now() - openCvLoadStartedAt);
-
-  console.log('OpenCV.js ready:', elapsed + ' ms');
-
-  if (resolveOpenCvReady) {
-    resolveOpenCvReady(window.cv);
-    resolveOpenCvReady = null;
-    rejectOpenCvReady = null;
-  }
-
-  const status = document.getElementById('adminCaptureStatus');
-
-  if (status && adminCameraReady && !adminBackgroundReady) {
-    status.textContent =
-      'カメラと画像処理エンジンの準備が完了しました。①を押してください。';
-  }
-
-  const bgBtn = document.getElementById('btnAdminBackground');
-
-  if (bgBtn && adminCameraReady && !adminBackgroundReady) {
-    bgBtn.disabled = false;
-    bgBtn.textContent = '① つくえ（背景）を記憶する';
-  }
-
-  return true;
-}
-
-function failOpenCvReady(reason) {
-  if (openCvReady || openCvInitError) return;
-
-  openCvInitError = new Error(
-    '画像処理エンジン（OpenCV/WASM）を起動できませんでした。' +
-    (reason ? '\\n' + reason : '')
-  );
-
-  console.error('OpenCV initialization failed:', reason);
-
-  if (rejectOpenCvReady) {
-    rejectOpenCvReady(openCvInitError);
-    resolveOpenCvReady = null;
-    rejectOpenCvReady = null;
-  }
-}
-
-function onOpenCvReady() {
-  return finishOpenCvReady()
-    ? Promise.resolve(window.cv)
-    : openCvReadyPromise;
-}
-
-function ensureOpenCvReady(timeoutMs = 30000) {
-  if (openCvReady) return Promise.resolve(window.cv);
-  if (openCvInitError) return Promise.reject(openCvInitError);
-
-  const loadPromise = startOpenCvLoad();
-
-  return Promise.race([
-    loadPromise,
-
-    new Promise((_, reject) => {
-      setTimeout(() => {
-        if (openCvReady || openCvInitError) return;
-        reject(
-          new Error(
-            'OpenCV/WASMの初期化が' +
-            Math.round(timeoutMs / 1000) +
-            '秒以内に完了しませんでした。'
-          )
-        );
-      }, timeoutMs);
-    })
-  ]);
-}
 // ========================================
 // テンプレート（通貨）のローカル保存
 // ========================================
@@ -557,25 +620,23 @@ function goToCheckout() {
 
   switchView('view-checkout');
 
-  // カメラを使う時だけOpenCVを待つ
-  ensureOpenCvReady()
+  // OpenCVとカメラを同時に準備する。
+  const openCvPromise = ensureOpenCvReady();
+
+  const cameraPromise = startCamera(
+    'videoElement',
+    'overlayCanvas',
+    processCheckoutFrame
+  );
+
+  Promise.all([openCvPromise, cameraPromise])
     .then(() => {
       document.getElementById('checkoutInstruction').innerHTML =
-        '<span style="color:#E91E63;font-weight:bold;">カメラを準備中...</span>';
+        'カメラの下に おかねを おいてね 💰';
 
-      return startCamera(
-        'videoElement',
-        'overlayCanvas',
-        processCheckoutFrame
-      );
-    })
-    .then(() => {
       setTimeout(() => {
-        if (captureBackground(true)) {
-          document.getElementById('checkoutInstruction').innerHTML =
-            'カメラの下に おかねを おいてね 💰';
-        }
-      }, 800);
+        captureBackground(true);
+      }, 300);
     })
     .catch(err => {
       document.getElementById('checkoutInstruction').innerHTML =
@@ -1039,55 +1100,24 @@ function openAdmin() {
   document.getElementById('adminTargetBox').style.display =
     'none';
 
+  // OpenCVとカメラを同時に起動して待ち時間を重ねる。
+  const openCvPromise = ensureOpenCvReady();
+
   startCamera(
     'adminVideoElement',
     'adminOverlayCanvas',
     (v, c) => {
-      if (openCvReady) {
-        extractFeatures(v, c, false);
-      }
-    }
-  )
-  .then(() => {
-    adminCameraReady = true;
-
-    if (openCvReady) {
       bgBtn.disabled = false;
-      bgBtn.textContent =
-        '① つくえ（背景）を記憶する';
+    bgBtn.textContent =
+      '① つくえ（背景）を記憶する';
 
-      document.getElementById('adminBackgroundStatus').textContent =
-        '背景：🔴 まだ記憶していません';
+    document.getElementById('adminBackgroundStatus').textContent =
+      '背景：🔴 まだ記憶していません';
 
-      document.getElementById('adminCaptureStatus').textContent =
-        '机の上にお金を置かず、①を押してください。';
+    document.getElementById('adminCaptureStatus').textContent =
+      '机の上にお金を置かず、①を押してください。';
 
-    } else {
-      bgBtn.disabled = true;
-      bgBtn.textContent =
-        '① 画像処理エンジン準備中...';
-
-      document.getElementById('adminBackgroundStatus').textContent =
-        '背景：🟡 画像処理エンジン準備中...';
-
-      document.getElementById('adminCaptureStatus').textContent =
-        'カメラは準備完了。画像処理エンジンを待っています...';
-
-      ensureOpenCvReady()
-        .then(() => {
-          if (!adminCameraReady || adminBackgroundReady) return;
-
-          bgBtn.disabled = false;
-          bgBtn.textContent =
-            '① つくえ（背景）を記憶する';
-
-          document.getElementById('adminBackgroundStatus').textContent =
-            '背景：🔴 まだ記憶していません';
-
-          document.getElementById('adminCaptureStatus').textContent =
-            '机の上にお金を置かず、①を押してください。';
-        })
-        .catch(err => {
+  .catch(err => {
           bgBtn.disabled = true;
           bgBtn.textContent =
             '① OpenCV起動失敗';
@@ -1170,6 +1200,27 @@ function renderTemplates() {
 function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 }
+
+// 会計/管理ボタンに触れた時点でOpenCVを先読み開始。
+// クリック時には既にロードが進んでいる可能性が高い。
+document.addEventListener('DOMContentLoaded', () => {
+  const prewarm = () => {
+    startOpenCvLoad().catch(() => {});
+  };
+
+  const checkoutButton = document.getElementById('btnGoCheckout');
+  const adminButton = document.getElementById('adminBtn');
+
+  if (checkoutButton) {
+    checkoutButton.addEventListener('pointerenter', prewarm, { once: true });
+    checkoutButton.addEventListener('touchstart', prewarm, { once: true, passive: true });
+  }
+
+  if (adminButton) {
+    adminButton.addEventListener('pointerenter', prewarm, { once: true });
+    adminButton.addEventListener('touchstart', prewarm, { once: true, passive: true });
+  }
+});
 </script>
 <!-- OpenCV.js / external WASM は会計・管理画面を開いた時だけ動的ロードします。 -->
 <script>
