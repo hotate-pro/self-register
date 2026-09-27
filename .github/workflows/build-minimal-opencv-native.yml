@@ -35,6 +35,31 @@ jobs:
           set -eux
           git clone --depth 1 --branch 4.13.0 https://github.com/opencv/opencv.git opencv-src
 
+      - name: Trim OpenCV.js runtime defaults
+        shell: bash
+        run: |
+          set -euxo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          p = Path("opencv-src/modules/js/CMakeLists.txt")
+          s = p.read_text(encoding="utf-8")
+
+          old = '-s TOTAL_MEMORY=128MB -s WASM_MEM_MAX=1GB -s ALLOW_MEMORY_GROWTH=1'
+          new = '-s TOTAL_MEMORY=32MB -s WASM_MEM_MAX=256MB -s ALLOW_MEMORY_GROWTH=1'
+          if old not in s:
+              raise SystemExit("OpenCV JS memory settings were not found")
+          s = s.replace(old, new, 1)
+
+          old_fs = '-s FORCE_FILESYSTEM=1 --use-preload-plugins --bind'
+          new_fs = '--bind'
+          if old_fs not in s:
+              raise SystemExit("OpenCV JS filesystem flags were not found")
+          s = s.replace(old_fs, new_fs, 1)
+
+          p.write_text(s, encoding="utf-8")
+          PY
+
       - name: Build only core + imgproc
         shell: bash
         run: |
@@ -67,7 +92,7 @@ jobs:
             --cmake_option=-DBUILD_PACKAGE=OFF \
             --cmake_option=-DBUILD_ZLIB=OFF \
             --cmake_option=-DWITH_PTHREADS_PF=OFF \
-            --build_flags="-O3 -flto -s ENVIRONMENT=web -s USE_PTHREADS=0 -s FILESYSTEM=0 -s MALLOC=emmalloc -s ALLOW_MEMORY_GROWTH=1 -s INITIAL_MEMORY=33554432"
+            --build_flags="-O3 -flto -s ENVIRONMENT=web -s USE_PTHREADS=0 -s MALLOC=emmalloc -s ALLOW_MEMORY_GROWTH=1"
 
       - name: Extract external WASM
         shell: bash
